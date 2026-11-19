@@ -246,7 +246,7 @@ def verify_imap_auth(email: str, access_token: str) -> None:
             "outlook.office365.com", 993, ssl_context=ssl.create_default_context(),
             timeout=20,
         )
-        payload = f"user={email}\\x01auth=Bearer {access_token}\\x01\\x01".encode()
+        payload = f"user={email}\x01auth=Bearer {access_token}\x01\x01".encode()
         kind, _ = connection.authenticate("XOAUTH2", lambda _: payload)
         if kind != "OK":
             raise OAuthError("Microsoft IMAP did not authenticate the selected account")

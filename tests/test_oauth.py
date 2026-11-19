@@ -145,3 +145,79 @@ def test_real_microsoft_device_verification_hostname(verification_uri, expected_
     else:
         with pytest.raises(OAuthError, match="Unexpected Microsoft"):
             oauth.start_device_auth("sample@hotmail.com")
+
+
+def test_imap_xoauth2_uses_real_sasl_control_separators(monkeypatch):
+    import imaplib
+    captured = {}
+
+    class FakeIMAP:
+        def authenticate(self, mechanism, callback):
+            captured["mechanism"] = mechanism
+            captured["bytes"] = callback(b"")
+            return "OK", [b"Authenticated"]
+
+        def logout(self):
+            captured["logged_out"] = True
+
+    monkeypatch.setattr(imaplib, "IMAP4_SSL", lambda *a, **kw: FakeIMAP())
+    oauth.verify_imap_auth("sample@hotmail.com", "A" * 80)
+    assert captured["mechanism"] == "XOAUTH2"
+    assert captured["bytes"] == (
+        b"user=sample@hotmail.com\x01auth=Bearer " + b"A" * 80 + b"\x01\x01"
+    )
+    assert b"\\x01" not in captured["bytes"]
+    assert captured["logged_out"] is True
+
+
+def test_imap_xoauth2_authentication_failure_is_safe(monkeypatch):
+    import imaplib
+
+    class RejectingIMAP:
+        def authenticate(self, mechanism, callback):
+            assert b"\x01auth=Bearer " in callback(b"")
+            raise imaplib.IMAP4.error("authentication refused")
+
+        def logout(self):
+            pass
+
+    monkeypatch.setattr(imaplib, "IMAP4_SSL", lambda *a, **kw: RejectingIMAP())
+    with pytest.raises(OAuthError, match="authentication failed"):
+        oauth.verify_imap_auth("sample@hotmail.com", "A" * 80)
+
+
+def test_device_code_page_links_to_official_portal_not_localhost(signed_in, app, monkeypatch):
+    import importlib
+
+    client, csrf = signed_in
+    webui = importlib.import_module("filter_vision.app")
+    with app.state.store.db() as con:
+        con.execute(
+            "INSERT INTO accounts(label,provider,host,port,username,folder,interval_minutes,"
+            "enabled,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            ("Microsoft", "outlook", "outlook.office365.com", 993,
+             "sample@hotmail.com", "Junk", 30, 0, 1),
+        )
+
+    def mock_start(email):
+        assert email == "sample@hotmail.com"
+        return {
+            "user_code": "ABCD-EFGH", "device_code": "D" * 100,
+            "verification_uri": "https://login.microsoft.com/device",
+            "expires_at": 2999999999,
+            "interval": 5,
+            "last_poll_at": 0,
+            "settings": {"token_url": "https://login.microsoftonline.com/common/oauth2/v2.0/token"},
+        }
+    monkeypatch.setattr(webui, "start_device_auth", mock_start)
+    response = client.post("/accounts/1/oauth/start", data={"csrf": csrf},
+                           follow_redirects=False)
+    assert response.status_code == 303
+    page = client.get("/accounts/1/oauth")
+    assert page.status_code == 200
+    assert "https://microsoft.com/devicelogin" in page.text
+    assert "https://login.microsoft.com/device" not in page.text
+    assert "ABCD-EFGH" in page.text
+    assert "http://127.0.0.1" not in page.text
+    assert "device-code sign-in" in page.text
+    assert "D" * 60 not in page.text

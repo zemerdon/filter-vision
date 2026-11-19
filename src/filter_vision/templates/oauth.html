@@ -12,7 +12,9 @@
 {% if connected %}<p class="success">This account already has encrypted OAuth credentials stored locally. Mail scanning remains disabled.</p>{% endif %}
 {% if flow %}
 <h2>Approve the Microsoft sign-in</h2>
-<p>Open <a href="{{ flow.verification_uri }}" target="_blank" rel="noopener noreferrer">{{ flow.verification_uri }}</a> on your phone or computer.</p>
+<p>Open Microsoft's official device sign-in page in a separate browser tab:</p>
+<p><a href="{{ flow.verification_uri }}" target="_blank" rel="noopener noreferrer">{{ flow.verification_uri }}</a></p>
+<p class="muted">This is a device-code sign-in, not a localhost callback. If Microsoft redirects you to 127.0.0.1 or reports a missing response_type, return here, start a new authorization, and open Microsoft's device sign-in page in a private browser window.</p>
 <p>When Microsoft asks for your device code, enter:</p>
 <div class="panel highlight"><h1 class="mono">{{ flow.user_code }}</h1></div>
 <p class="muted">Sign in with the specific Microsoft account shown above. After approval, return here and select Check Authorization.</p>

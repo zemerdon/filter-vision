@@ -2,7 +2,7 @@
 
 A self-hosted, native Debian 13 email-analysis and filtering administration UI.
 
-**v0.1.6 stable foundation:** passwordless WebUI restricted to trusted source networks, signed HTTPS browser cookies/CSRF, offline EML header analysis, imported account/rule drafts, Microsoft device-code OAuth2 reauthorization with encrypted tokens, read-only Junk rule previews, and the verified GitHub stable updater.
+**v0.1.7 stable foundation:** passwordless WebUI restricted to trusted source networks, signed HTTPS browser cookies/CSRF, offline EML header analysis, imported account/rule drafts, Microsoft device-code OAuth2 reauthorization with encrypted tokens, read-only Junk rule previews, and the verified GitHub stable updater.
 
 **Important:** Microsoft account authorization and read-only IMAP previews are available, but **scheduled scanning and deletion are not enabled**. Existing mail cleaners must remain running until the new account authorization, rule parity, backup/restore and safe cutover are verified.
 
@@ -25,3 +25,7 @@ Fixed an overly strict Origin/Host comparison affecting the Microsoft Connect an
 ## v0.1.6 Microsoft device-authorization compatibility
 
 Accepts Microsoft's verified HTTPS device-login hostname login.microsoft.com in the authorization response. The previous restricted hostname list excluded this legitimate response and prevented the verification code from appearing even after the browser Origin fix. Other hosts and non-HTTPS verification URLs remain blocked.
+
+## v0.1.7 Microsoft device-code usability and IMAP XOAUTH2 fix
+
+Use the official Microsoft device-login URL displayed alongside the device user code. Never use a 127.0.0.1 callback for the device-code flow. Corrected the XOAUTH2 SASL separator bytes for real Outlook IMAP authentication, with regression tests protecting the protocol payload. Existing cleaner and mail deletion remain unchanged.

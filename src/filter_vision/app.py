@@ -245,7 +245,10 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
                 pending = None
             safe_flow = {
                 "user_code": pending["user_code"],
-                "verification_uri": pending["verification_uri"],
+                # Microsoft documents this stable, public device-code entry URL.
+                # The response's login.microsoft.com/device URL is not an
+                # application callback. The device code stays in the WebUI.
+                "verification_uri": "https://microsoft.com/devicelogin",
                 "expires_at": pending["expires_at"],
             } if pending else None
         return render(request, "oauth.html", active="accounts", sess=sess,
