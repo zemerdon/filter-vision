@@ -1,6 +1,7 @@
 """Network-restricted, passwordless Filter Vision WebUI.
 
-No IMAP credentials are accepted and no mailbox mutation code exists in this build.
+Microsoft OAuth2 authorization and read-only IMAP previews are supported;
+no automated message-deleting worker exists in this release.
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, Form, Request, UploadFile, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -28,7 +30,8 @@ from .analysis import MAX_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES, inspect_eml, s
 from .storage import Store
 from .updates import status as update_status, request_update
 from .oauth import (TokenVault, OAuthError, start_device_auth, poll_device_auth,
-                    verify_imap_auth)
+                    verify_imap_auth, access_token_for)
+from .preview import scan_junk_preview, PreviewError
 
 # Restrict passwordless administration to explicitly trusted local networks.
 # The installer adds the instance network to the trusted list at deployment.
@@ -37,6 +40,43 @@ TRUSTED_DEFAULT = ("127.0.0.1/32,::1/128,"
 COOKIE = "fv_browser"
 RELEASE_API = "https://api.github.com/repos/zemerdon/filter-vision/releases/latest"
 BASE = Path(__file__).parent
+
+
+def is_acceptable_form_origin(origin: str | None, host_header: str, fetch_site: str | None) -> bool:
+    """Defence in depth for HTTPS form posts in a passwordless, CSRF-protected UI.
+
+    Browser-origin serialization can omit the default HTTPS port even when
+    a reverse-proxy or alternate listener includes a port in Host. Same-host
+    implicit-port forms are accepted ONLY because every mutating endpoint
+    still verifies a signed, browser-bound CSRF token.
+
+    Explicit different ports, different hosts, HTTP, cross-site fetches and
+    malformed Origins remain rejected. Opaque Origins ('null') rely on the
+    signed SameSite browser cookie + per-request CSRF validation.
+    """
+    if fetch_site and fetch_site.lower().strip() == "cross-site":
+        return False
+    if not origin or not origin.strip():
+        return True
+    if origin.strip().lower() == "null":
+        return True
+    try:
+        source = urlsplit(origin)
+        target = urlsplit("//" + host_header)
+        if source.scheme != "https":
+            return False
+        if not source.hostname or not target.hostname:
+            return False
+        if source.hostname.lower() != target.hostname.lower():
+            return False
+        if any((source.username, source.password, source.path, source.query, source.fragment)):
+            return False
+        # Require port equality when explicitly specified on BOTH sides.
+        if source.port is not None and target.port is not None and source.port != target.port:
+            return False
+        return True
+    except ValueError:
+        return False
 
 
 def create_app(data_dir: str | Path | None = None) -> FastAPI:
@@ -87,12 +127,12 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
         if requested_host not in valid_hosts:
             return JSONResponse({"detail": "Untrusted Host header"}, status_code=400)
         if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
-            origin = request.headers.get("origin")
-            if origin:
-                from urllib.parse import urlsplit
-                origin_host = urlsplit(origin).netloc.lower()
-                if origin_host != request.headers.get("host", "").lower():
-                    return JSONResponse({"detail": "Invalid request origin"}, status_code=403)
+            if not is_acceptable_form_origin(
+                request.headers.get("origin"),
+                request.headers.get("host", ""),
+                request.headers.get("sec-fetch-site"),
+            ):
+                return JSONResponse({"detail": "Invalid request origin"}, status_code=403)
         sess, cookie_to_set = browser_session(request)
         request.state.fv_browser_session = sess
         size = request.headers.get("content-length")

@@ -2,7 +2,7 @@
 
 A self-hosted, native Debian 13 email-analysis and filtering administration UI.
 
-**v0.1.4 stable foundation:** passwordless WebUI restricted to trusted source networks, signed HTTPS browser cookies/CSRF, offline EML header analysis, imported account/rule drafts, Microsoft device-code OAuth2 reauthorization with encrypted tokens, read-only Junk rule previews, and the verified GitHub stable updater.
+**v0.1.5 stable foundation:** passwordless WebUI restricted to trusted source networks, signed HTTPS browser cookies/CSRF, offline EML header analysis, imported account/rule drafts, Microsoft device-code OAuth2 reauthorization with encrypted tokens, read-only Junk rule previews, and the verified GitHub stable updater.
 
 **Important:** Microsoft account authorization and read-only IMAP previews are available, but **scheduled scanning and deletion are not enabled**. Existing mail cleaners must remain running until the new account authorization, rule parity, backup/restore and safe cutover are verified.
 
@@ -17,3 +17,7 @@ The installer fetches the latest published stable release and checks its archive
 Updates download published GitHub stable assets through a fixed root-owned update helper; verify backup/rollback before relying on unattended updates.
 
 Public GitHub source must never contain private project instructions, OAuth credentials, protected user emails or message samples.
+
+## v0.1.5 browser form compatibility
+
+Fixed an overly strict Origin/Host comparison affecting the Microsoft Connect and Check for Updates POST forms with some browser origin representations. Cross-site and mixed-scheme origins remain blocked; all mutating routes still require the signed, SameSite browser session cookie and matching CSRF token. Restored missing imports for OAuth refresh and read-only Junk preview.
