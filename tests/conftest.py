@@ -1,3 +1,4 @@
+import re
 import pytest
 from fastapi.testclient import TestClient
 from filter_vision.app import create_app
@@ -10,23 +11,17 @@ def app(tmp_path):
 
 @pytest.fixture
 def client(app):
-    with TestClient(app) as test:
+    # Browser on a trusted private LAN, connecting over HTTPS.
+    with TestClient(app, base_url="https://filter-vision",
+                    client=("192.168.1.69", 50000)) as test:
         yield test
 
 
 @pytest.fixture
-def signed_in(client, app):
-    code = app.state.store.setup_path.read_text().strip()
-    result = client.post("/setup", data={
-        "setup_code": code, "password": "LongRandomTestPassword-2026!",
-        "password_confirm": "LongRandomTestPassword-2026!",
-    }, follow_redirects=False)
-    assert result.status_code == 303
-    assert not app.state.store.setup_path.exists()
-    result = client.post("/login", data={"password": "LongRandomTestPassword-2026!"},
-                         follow_redirects=False)
-    assert result.status_code == 303
-    assert "fv_session" in client.cookies
-    with app.state.store.db() as con:
-        csrf = con.execute("SELECT csrf FROM sessions").fetchone()[0]
-    return client, csrf
+def signed_in(client):
+    # Compatibility name for existing tests: in passwordless mode, no login.
+    response = client.get("/accounts")
+    assert response.status_code == 200
+    match = re.search(r'name="csrf" value="([0-9a-f]{64})"', response.text)
+    assert match
+    return client, match.group(1)

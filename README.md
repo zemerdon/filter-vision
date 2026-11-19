@@ -1,21 +1,19 @@
 # Filter Vision
 
-A self-hosted email analysis and filtering management WebUI for Debian 13.
+A self-hosted, native Debian 13 email-analysis and filtering administration UI.
 
-**Stable foundation v0.1.0** includes local administrator login, offline multi-file EML header analysis, disabled account and rule drafts, activity history and a stable-only Updates screen. It does **not** connect to email accounts, scan mailboxes, or delete emails. The button to apply updates is also disabled until a safe rollback-capable updater is implemented and tested.
+**v0.1.3 stable foundation:** passwordless WebUI restricted to trusted source networks, signed HTTPS browser cookies/CSRF, offline multi-file EML header analysis, disabled account/rule drafts, legacy noncredential configuration importer, activity history, GitHub stable-only update checks and a fixed-action root update service.
 
-## Install on an existing Debian 13 LXC
+**Important:** Live OAuth2/IMAP connectivity, scheduled scanning and deletion are **not enabled in this release**. Existing mail cleaners must remain running until migration is verified.
 
-Use the versioned GitHub stable release and run as root:
+## Install in an existing Debian 13 LXC
 
     curl -fsSL https://github.com/zemerdon/filter-vision/releases/latest/download/install.sh -o /tmp/filter-vision-install.sh && sudo bash /tmp/filter-vision-install.sh
 
-It uses the latest *stable* GitHub release only, verifies the application archive's SHA256 manifest, then starts the native systemd WebUI on port 9494 over HTTPS using a generated self-signed certificate.
+The installer fetches the latest published stable release and checks its archive's SHA256, then starts an unprivileged systemd WebUI on port 9494 over HTTPS. The initial certificate is self-signed.
 
-Before submitting passwords or private email files, verify and explicitly trust the certificate or configure a trusted HTTPS reverse proxy. The setup token remains in the protected local file /var/lib/filter-vision/setup-token. Do not share it in reports.
+**Passwordless:** anyone on an allowed source-IP network who can reach the WebUI can administer it. Review /etc/filter-vision/web.env (CIDR and Host-header restrictions). Do not expose port 9494 directly on the internet or via an unrestricted proxy. The user never needs a WebUI password or setup code.
 
-## Important limits
+Updates download published GitHub stable assets through a fixed root-owned update helper; verify backup/rollback before relying on unattended updates.
 
-There is no mail worker, IMAP OAuth connector, or enabled filtering engine in v0.1.0. Account and rule records are configuration drafts only.
-
-Project continuity and operational infrastructure remain private. This repository contains only deliberately published application source and stable artifacts, never private project documents, account data or credentials.
+Public GitHub source must never contain private project instructions, OAuth credentials, protected user emails or message samples.

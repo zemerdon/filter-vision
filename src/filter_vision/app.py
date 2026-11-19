@@ -1,4 +1,4 @@
-"""Authenticated, offline-only Filter Vision WebUI v0.1.0.
+"""Network-restricted, passwordless Filter Vision WebUI.
 
 No IMAP credentials are accepted and no mailbox mutation code exists in this build.
 """
@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -24,28 +25,15 @@ from fastapi.templating import Jinja2Templates
 from . import __version__
 from .analysis import MAX_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES, inspect_eml, suggestions, validate_rule
 from .storage import Store
+from .updates import status as update_status, request_update
 
-SALT_ITERATIONS = 450_000
-SESSION_SECONDS = 12 * 3600
+# Restrict passwordless administration to explicitly trusted local networks.
+# The installer adds the instance network to the trusted list at deployment.
+TRUSTED_DEFAULT = ("127.0.0.1/32,::1/128,"
+                   "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16")
+COOKIE = "fv_browser"
 RELEASE_API = "https://api.github.com/repos/zemerdon/filter-vision/releases/latest"
 BASE = Path(__file__).parent
-
-
-def password_hash(password: str) -> str:
-    salt = secrets.token_bytes(24)
-    key = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, SALT_ITERATIONS)
-    return f"pbkdf2_sha256:{SALT_ITERATIONS}:{salt.hex()}:{key.hex()}"
-
-
-def password_ok(password: str, hashed: str) -> bool:
-    try:
-        algorithm, rounds, salt, expected = hashed.split(":")
-        if algorithm != "pbkdf2_sha256" or not 100_000 <= int(rounds) <= 1_000_000:
-            return False
-        calc = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), int(rounds))
-        return hmac.compare_digest(calc, bytes.fromhex(expected))
-    except (TypeError, ValueError):
-        return False
 
 
 def create_app(data_dir: str | Path | None = None) -> FastAPI:
@@ -55,10 +43,51 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
     app = FastAPI(title="Filter Vision", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store = store
     app.state.latest = {}
+    trusted = tuple(ipaddress.ip_network(c.strip(), strict=False) for c in
+                    os.environ.get("FV_TRUSTED_CIDRS", TRUSTED_DEFAULT).split(",") if c.strip())
+    if not trusted:
+        raise ValueError("FV_TRUSTED_CIDRS cannot be empty")
+
+    def browser_session(request: Request) -> tuple[dict, str | None]:
+        cookie = request.cookies.get(COOKIE, "")
+        parts = cookie.split(".")
+        valid = False
+        if len(parts) == 2 and 40 <= len(parts[0]) <= 90 and len(parts[1]) == 64:
+            signature = hmac.new(store.browser_key, parts[0].encode(), hashlib.sha256).hexdigest()
+            valid = hmac.compare_digest(signature, parts[1])
+        if valid:
+            token, new_cookie = parts[0], None
+        else:
+            token = secrets.token_urlsafe(32)
+            signature = hmac.new(store.browser_key, token.encode(), hashlib.sha256).hexdigest()
+            new_cookie = token + "." + signature
+        csrf = hmac.new(store.browser_key, ("csrf:" + token).encode(), hashlib.sha256).hexdigest()
+        return {"csrf": csrf}, new_cookie
     app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
+        try:
+            client_ip = ipaddress.ip_address(request.client.host if request.client else "")
+            allowed = any(client_ip in network for network in trusted)
+        except ValueError:
+            allowed = False
+        if not allowed:
+            return JSONResponse({"detail": "Trusted network access only"}, status_code=403)
+        valid_hosts = {h.strip().lower() for h in os.environ.get(
+            "FV_ALLOWED_HOSTS", "filter-vision,127.0.0.1,localhost").split(",")}
+        requested_host = (request.url.hostname or "").lower()
+        if requested_host not in valid_hosts:
+            return JSONResponse({"detail": "Untrusted Host header"}, status_code=400)
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            origin = request.headers.get("origin")
+            if origin:
+                from urllib.parse import urlsplit
+                origin_host = urlsplit(origin).netloc.lower()
+                if origin_host != request.headers.get("host", "").lower():
+                    return JSONResponse({"detail": "Invalid request origin"}, status_code=403)
+        sess, cookie_to_set = browser_session(request)
+        request.state.fv_browser_session = sess
         size = request.headers.get("content-length")
         if size and (not size.isdecimal() or int(size) > MAX_TOTAL_BYTES + 150_000):
             return JSONResponse({"detail": "Request too large"}, status_code=413)
@@ -71,17 +100,13 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
             "default-src 'none'; style-src 'self'; img-src 'self'; "
             "form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
         )
+        if cookie_to_set:
+            response.set_cookie(COOKIE, cookie_to_set, httponly=True,
+                                samesite="strict", secure=True, path="/")
         return response
 
     def session(request: Request):
-        token = request.cookies.get("fv_session", "")
-        if not 35 <= len(token) <= 100:
-            return None
-        digest = hashlib.sha256(token.encode()).hexdigest()
-        with store.db() as con:
-            row = con.execute("SELECT token_hash, csrf, expires_at FROM sessions "
-                              "WHERE token_hash=? AND expires_at>?", (digest, int(time.time()))).fetchone()
-            return dict(row) if row else None
+        return request.state.fv_browser_session
 
     def render(request, template, active="", status=200, sess=None, **kwargs):
         ctx = {"request": request, "version": __version__, "active": active,
@@ -90,8 +115,8 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
         return templates.TemplateResponse(request, template, ctx, status_code=status)
 
     def guard(request):
-        sess = session(request)
-        return sess, None if sess else RedirectResponse("/login", status_code=303)
+        # Network gate and signed browser session are enforced by middleware.
+        return session(request), None
 
     def valid_csrf(sess, value):
         return bool(sess and value and hmac.compare_digest(sess["csrf"], value))
@@ -103,90 +128,13 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
     def healthz():
         return {"status": "ok", "service": "filter-vision"}
 
-    @app.get("/setup", response_class=HTMLResponse)
-    def setup(request: Request):
-        if store.has_admin():
-            return RedirectResponse("/login", status_code=303)
-        return render(request, "setup.html", active="setup")
-
-    @app.post("/setup", response_class=HTMLResponse)
-    def setup_post(request: Request, setup_code: str = Form(""),
-                   password: str = Form(""), password_confirm: str = Form("")):
-        if store.has_admin():
-            return RedirectResponse("/login", status_code=303)
-        if not store.setup_path.exists() or not hmac.compare_digest(
-            setup_code.strip(), store.setup_path.read_text().strip()
-        ):
-            return render(request, "setup.html", status=400, error="Invalid setup code")
-        if len(password) < 12 or len(password) > 200 or password != password_confirm:
-            return render(request, "setup.html", status=400,
-                          error="Passwords must match and contain 12–200 characters")
-        try:
-            with store.db() as con:
-                con.execute("INSERT INTO admins (id,password_hash,created_at) VALUES (1,?,?)",
-                            (password_hash(password), int(time.time())))
-        except sqlite3.IntegrityError:
-            return RedirectResponse("/login", status_code=303)
-        store.setup_path.unlink(missing_ok=True)
-        store.audit("admin_initialized", "Local administrator created")
-        return RedirectResponse("/login?created=1", status_code=303)
-
-    @app.get("/login", response_class=HTMLResponse)
-    def login(request: Request):
-        if not store.has_admin():
-            return RedirectResponse("/setup", status_code=303)
-        if session(request):
-            return RedirectResponse("/", status_code=303)
-        return render(request, "login.html", active="login",
-                      notice="Administrator created. Sign in." if request.query_params.get("created") else None)
-
-    @app.post("/login", response_class=HTMLResponse)
-    def login_post(request: Request, password: str = Form("")):
-        if not store.has_admin():
-            return RedirectResponse("/setup", status_code=303)
-        client = (request.client.host if request.client else "unknown")[:80]
-        now = int(time.time())
-        with store.db() as con:
-            attempt = con.execute("SELECT count,last_attempt FROM login_attempts WHERE client=?",
-                                  (client,)).fetchone()
-            if attempt and attempt["last_attempt"] > now - 900 and attempt["count"] >= 8:
-                return render(request, "login.html", status=429, error="Too many attempts. Try again later.")
-            admin = con.execute("SELECT password_hash FROM admins WHERE id=1").fetchone()
-            if not admin or not password_ok(password, admin["password_hash"]):
-                count = attempt["count"] + 1 if attempt and attempt["last_attempt"] > now - 900 else 1
-                con.execute("INSERT INTO login_attempts(client,count,last_attempt) VALUES(?,?,?) "
-                            "ON CONFLICT(client) DO UPDATE SET count=excluded.count,last_attempt=excluded.last_attempt",
-                            (client, count, now))
-                return render(request, "login.html", status=401, error="Incorrect password")
-            con.execute("DELETE FROM login_attempts WHERE client=?", (client,))
-            token = secrets.token_urlsafe(40)
-            digest = hashlib.sha256(token.encode()).hexdigest()
-            csrf = secrets.token_urlsafe(32)
-            con.execute("INSERT INTO sessions(token_hash,admin_id,csrf,expires_at) VALUES(?,1,?,?)",
-                        (digest, csrf, now + SESSION_SECONDS))
-        response = RedirectResponse("/", status_code=303)
-        response.set_cookie("fv_session", token, max_age=SESSION_SECONDS, httponly=True,
-                            samesite="strict", secure=os.environ.get("FV_SECURE_COOKIES", "0") == "1",
-                            path="/")
-        return response
-
-    @app.post("/logout")
-    def logout(request: Request, csrf: str = Form("")):
-        sess, denial = guard(request)
-        if denial:
-            return denial
-        if not valid_csrf(sess, csrf):
-            return invalid_csrf()
-        with store.db() as con:
-            con.execute("DELETE FROM sessions WHERE token_hash=?", (sess["token_hash"],))
-        response = RedirectResponse("/login", status_code=303)
-        response.delete_cookie("fv_session", path="/")
-        return response
+    @app.get("/setup")
+    @app.get("/login")
+    def legacy_auth_redirect():
+        return RedirectResponse("/", status_code=303)
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request):
-        if not store.has_admin():
-            return RedirectResponse("/setup", status_code=303)
         sess, denial = guard(request)
         if denial:
             return denial
@@ -306,7 +254,9 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
         sess, denial = guard(request)
         if denial:
             return denial
-        return render(request, "updates.html", active="updates", sess=sess, latest=app.state.latest)
+        return render(request, "updates.html", active="updates", sess=sess,
+                      latest=app.state.latest, update_status=update_status(),
+                      request_pending=(store.directory / "update-request").exists())
 
     @app.post("/updates/check", response_class=HTMLResponse)
     def update_check(request: Request, csrf: str = Form("")):
@@ -326,8 +276,10 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
                 payload = json.loads(blob)
             tag = str(payload.get("tag_name", ""))
             url = str(payload.get("html_url", ""))
-            if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
-                raise ValueError("No valid stable release tag returned")
+            if (not re.fullmatch(r"v\d+\.\d+\.\d+", tag)
+                    or payload.get("prerelease") or payload.get("draft")
+                    or payload.get("target_commitish") != "stable"):
+                raise ValueError("Release must be stable branch, not a draft or prerelease")
             if not url.startswith("https://github.com/zemerdon/filter-vision/releases/tag/"):
                 raise ValueError("Unexpected release URL")
             app.state.latest = {"tag": tag, "url": url, "error": "",
@@ -335,6 +287,24 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
                                             tuple(map(int, __version__.split(".")))}
         except (urllib.error.URLError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
             app.state.latest = {"error": f"Stable release check unavailable: {type(exc).__name__}"}
+        return RedirectResponse("/updates", status_code=303)
+
+    @app.post("/updates/apply", response_class=HTMLResponse)
+    def apply_stable(request: Request, csrf: str = Form("")):
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        if not valid_csrf(sess, csrf):
+            return invalid_csrf()
+        if not app.state.latest.get("is_newer"):
+            return HTMLResponse("Check for a newer stable release first", status_code=409)
+        try:
+            accepted = request_update(store.directory)
+        except OSError:
+            return HTMLResponse("Cannot queue stable update", status_code=503)
+        if not accepted:
+            return HTMLResponse("Stable update already queued", status_code=409)
+        store.audit("stable_update_requested", "Requested latest stable release (no version override)")
         return RedirectResponse("/updates", status_code=303)
 
     @app.get("/settings", response_class=HTMLResponse)

@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Filter Vision{% endblock %} · Filter Vision</title>
   <link rel="stylesheet" href="/static/style.css">
+  {% block extra_head %}{% endblock %}
 </head>
 <body>
 <div class="app">
   <aside class="sidebar">
     <div class="logo"><div class="logo-mark">FV</div><div><strong>FILTER VISION</strong><span>MAIL SECURITY CONSOLE</span></div></div>
-    {% if logged_in %}
     <nav aria-label="Main navigation">
       {% for key, path, label in [
         ("dashboard","/","Dashboard"),
@@ -23,13 +23,7 @@
         <a href="{{ path }}" {% if active == key %}class="selected" aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
     </nav>
-    <div class="sidebar-bottom">
-      <span class="status-dot"></span> Offline analysis mode
-      <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="text-btn" type="submit">Sign out</button></form>
-    </div>
-    {% else %}
-    <div class="sidebar-bottom"><span class="status-dot"></span> Secure administration</div>
-    {% endif %}
+    <div class="sidebar-bottom"><span class="status-dot"></span> Passwordless · Trusted networks only</div>
   </aside>
   <main class="main">
     <header class="topbar"><span>FILTER VISION / {{ active|upper }}</span><span>v{{ version }} · STABLE</span></header>

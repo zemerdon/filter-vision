@@ -125,9 +125,9 @@ id -u filtervision >/dev/null 2>&1 ||
   useradd --system -g filtervision --home-dir /nonexistent --shell /usr/sbin/nologin filtervision
 install -d -o filtervision -g filtervision -m 700 "$DATA"
 install -d -o root -g filtervision -m 750 "$CFG"
+ip="$(hostname -I | awk '{print $1}')"
+[[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Cannot determine instance IPv4"
 if [[ ! -e "$CFG/tls.crt" && ! -e "$CFG/tls.key" ]]; then
-  ip="$(hostname -I | awk '{print $1}')"
-  [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Cannot determine IPv4 for HTTPS certificate"
   openssl req -new -newkey rsa:3072 -x509 -nodes -days 365 \
     -subj '/CN=Filter Vision' \
     -addext "subjectAltName=IP:$ip,IP:127.0.0.1,DNS:filter-vision,DNS:localhost" \
@@ -138,6 +138,23 @@ fi
 chown root:filtervision "$CFG/tls.key"
 chmod 640 "$CFG/tls.key"
 chmod 644 "$CFG/tls.crt"
+# Preserve operator-managed network access policy across stable updates.
+# Passwordless WebUI: never implicitly bind access to the public internet.
+if [[ ! -f "$CFG/web.env" ]]; then
+  iface_cidr="$(ip -4 -o addr show scope global | awk 'NR==1{print $4}')"
+  [[ -n "$iface_cidr" ]] || fail "Could not determine trusted interface network"
+  python3 - "$CFG/web.env" "$iface_cidr" "$ip" "$(hostname -s)" <<'PYENV'
+import ipaddress,sys
+path,iface,host_ip,host_name=sys.argv[1:]
+network=ipaddress.ip_interface(iface).network
+prefix="127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+with open(path,"x",encoding="ascii") as out:
+    out.write(f"FV_TRUSTED_CIDRS={prefix},{network}\n")
+    out.write(f"FV_ALLOWED_HOSTS=localhost,127.0.0.1,{host_ip},{host_name}\n")
+PYENV
+fi
+chown root:filtervision "$CFG/web.env"
+chmod 640 "$CFG/web.env"
 cat > "$UNIT" <<EOF
 # Managed by Filter Vision stable installer
 [Unit]
@@ -152,6 +169,7 @@ Group=filtervision
 WorkingDirectory=$ROOT/current/filter-vision
 Environment=FV_DATA_DIR=$DATA
 Environment=FV_SECURE_COOKIES=1
+EnvironmentFile=-$CFG/web.env
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=$ROOT/current/venv/bin/uvicorn filter_vision.asgi:app --host 0.0.0.0 --port $PORT --ssl-keyfile $CFG/tls.key --ssl-certfile $CFG/tls.crt --no-server-header
 Restart=on-failure
@@ -169,10 +187,45 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 WantedBy=multi-user.target
 EOF
 chmod 644 "$UNIT"
+if [[ -f "$target/filter-vision/packaging/update-stable.sh" ]]; then
+  # Root update executor is never writable by the application service user.
+  install -d -o root -g root -m 755 /usr/local/libexec/filter-vision
+  install -o root -g root -m 755 "$target/filter-vision/packaging/update-stable.sh" \
+    /usr/local/libexec/filter-vision/update-stable.sh
+  install -d -o root -g filtervision -m 750 /var/lib/filter-vision-updater
+  cat > /etc/systemd/system/filter-vision-update.service <<'SVUPDATE'
+[Unit]
+Description=Filter Vision - verify, back up and apply latest stable release
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/libexec/filter-vision/update-stable.sh
+TimeoutStartSec=360
+SVUPDATE
+  cat > /etc/systemd/system/filter-vision-update.path <<'SVPATH'
+[Unit]
+Description=Watch for safe Filter Vision stable update requests
+
+[Path]
+PathExists=/var/lib/filter-vision/update-request
+Unit=filter-vision-update.service
+
+[Install]
+WantedBy=multi-user.target
+SVPATH
+  chmod 644 /etc/systemd/system/filter-vision-update.service \
+            /etc/systemd/system/filter-vision-update.path
+fi
 ln -s "$target" "$ROOT/.next.$$"
 mv -Tf "$ROOT/.next.$$" "$ROOT/current"
 systemctl daemon-reload
 systemctl enable "$SERVICE" >/dev/null
+if [[ -f /etc/systemd/system/filter-vision-update.path ]]; then
+  systemctl enable --now filter-vision-update.path >/dev/null
+fi
 restore() {
   if [[ -n "$previous" && -d "$previous" ]]; then
     ln -s "$previous" "$ROOT/.rollback.$$"

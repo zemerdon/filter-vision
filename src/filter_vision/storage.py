@@ -7,7 +7,7 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DDL = """
 CREATE TABLE IF NOT EXISTS admins (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -56,6 +56,21 @@ CREATE TABLE IF NOT EXISTS audit_events (
 PRAGMA user_version = 1;
 """
 
+SCHEMA_V2 = """
+CREATE TABLE IF NOT EXISTS rule_scopes (
+    rule_id INTEGER NOT NULL REFERENCES rules(id) ON DELETE CASCADE,
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    PRIMARY KEY(rule_id, account_id)
+);
+CREATE TABLE IF NOT EXISTS legacy_imports (
+    source_sha256 TEXT PRIMARY KEY,
+    account_count INTEGER NOT NULL,
+    rule_count INTEGER NOT NULL,
+    imported_at INTEGER NOT NULL
+);
+PRAGMA user_version = 2;
+"""
+
 
 class Store:
     def __init__(self, directory: str | Path):
@@ -63,8 +78,22 @@ class Store:
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(self.directory, 0o700)
         self.db_path = self.directory / "filter-vision.sqlite3"
-        self.setup_path = self.directory / "setup-token"
         self._init_db()
+        self.browser_key_path = self.directory / "browser-session.key"
+        if not self.browser_key_path.exists():
+            try:
+                fd = os.open(self.browser_key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                pass
+            else:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(secrets.token_bytes(32))
+        os.chmod(self.browser_key_path, 0o600)
+        self.browser_key = self.browser_key_path.read_bytes()
+        if len(self.browser_key) != 32:
+            raise RuntimeError("Invalid local browser-session key")
+        # Legacy setup tokens are obsolete in passwordless mode.
+        (self.directory / "setup-token").unlink(missing_ok=True)
 
     @contextmanager
     def db(self):
@@ -88,18 +117,10 @@ class Store:
                 raise RuntimeError("Database is newer than installed Filter Vision")
             if ver == 0:
                 con.executescript(DDL)
+                ver = 1
+            if ver == 1:
+                con.executescript(SCHEMA_V2)
         os.chmod(self.db_path, 0o600)
-        # A first-run bootstrap secret is required before admin creation.
-        if not self.has_admin() and not self.setup_path.exists():
-            fd = os.open(self.setup_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, "w") as f:
-                f.write(secrets.token_urlsafe(32) + "\n")
-        if self.setup_path.exists():
-            os.chmod(self.setup_path, 0o600)
-
-    def has_admin(self) -> bool:
-        with self.db() as con:
-            return con.execute("SELECT 1 FROM admins WHERE id=1").fetchone() is not None
 
     def audit(self, event: str, detail: str):
         import time

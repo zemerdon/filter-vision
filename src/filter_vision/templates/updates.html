@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Updates{% endblock %}
+{% block extra_head %}{% if request_pending or update_status.state in ["checking","downloading","applying"] %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
 {% block content %}
 <div class="heading"><div><p class="eyebrow">RELEASE MANAGEMENT</p><h1>Updates</h1><p class="muted">GitHub stable releases only. There is no develop update channel.</p></div><span class="pill">STABLE</span></div>
 <div class="stats two">
@@ -13,7 +14,19 @@
 {% if latest.tag and latest.url %}<p><a href="{{ latest.url }}" target="_blank" rel="noreferrer noopener">View {{ latest.tag }} release notes on GitHub</a></p>{% endif %}
 </div>
 <div class="panel"><h2>Apply stable update</h2>
-<p class="muted">Automatic installation, backup/rollback and restart verification are not available in v{{ version }}. This button stays disabled until the privileged update mechanism has been implemented and tested on fv-dev.</p>
-<button type="button" class="btn" disabled aria-disabled="true">Apply update — unavailable</button>
+<p class="muted">Only published GitHub <strong>stable</strong> releases are eligible. The updater downloads verified assets, backs up the database, checks the newly running version, and restores the previous release if installation fails.</p>
+{% if request_pending %}<p class="info">Stable update requested. Refreshing status automatically.</p>{% endif %}
+{% if update_status.state %}
+<div class="info">Update status: <strong>{{ update_status.state }}</strong>
+{% if update_status.version %}· {{ update_status.version }}{% endif %}
+{% if update_status.detail %}<p>{{ update_status.detail }}</p>{% endif %}
+</div>
+{% endif %}
+{% if latest.is_newer and not request_pending and update_status.state not in ["checking","downloading","applying"] %}
+<form method="post" action="/updates/apply"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="btn primary">Apply {{ latest.tag }} stable update</button></form>
+{% else %}
+<button type="button" class="btn" disabled>{% if not latest.is_newer %}Check for a newer stable release first{% else %}Update already in progress{% endif %}</button>
+{% endif %}
+<p><a href="/updates">Refresh update status</a></p>
 </div>
 {% endblock %}
