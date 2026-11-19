@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 {% block title %}Rules{% endblock %}
 {% block content %}
-<div class="heading"><div><p class="eyebrow">FILTER ENGINE</p><h1>Rules</h1><p class="muted">Review suggested signatures; live filtering is disabled in this foundation release.</p></div><span class="pill">DRAFTS ONLY</span></div>
-<div class="panel"><h2>Saved rule drafts</h2>
+<div class="heading"><div><p class="eyebrow">FILTER ENGINE</p><h1>Rules</h1><p class="muted">Review imported legacy signatures and new disabled rule drafts.</p></div><span class="pill">{{ "LEGACY FILTERING APPROVED" if approved_ids else "DRAFTS ONLY" }}</span></div>
+<div class="panel"><h2>Saved filtering rules</h2>
 {% if rules %}<div class="table-wrap"><table><thead><tr><th>ID</th><th>Type</th><th>Header</th><th>Value</th><th>Action</th><th>Status</th></tr></thead><tbody>
-{% for r in rules %}<tr><td>#{{ r.id }}</td><td>{{ r.kind.replace('_',' ')|title }}</td><td>{{ r.field }}</td><td class="value-cell">{{ r.pattern }}</td><td>None</td><td><span class="pill">Disabled draft</span></td></tr>{% endfor %}
+{% for r in rules %}<tr><td>#{{ r.id }}</td><td>{{ r.kind.replace('_',' ')|title }}</td><td>{{ r.field }}</td><td class="value-cell">{{ r.pattern }}</td><td>{{ "UID-specific delete in Junk" if r.id in approved_ids else "None" }}</td><td><span class="pill">{{ "Root-approved legacy" if r.id in approved_ids else "Disabled draft" }}</span></td></tr>{% endfor %}
 </tbody></table></div>{% else %}
 <p class="empty">No rule drafts yet. <a href="/analyze">Analyze an .eml file</a> to create one.</p>{% endif %}
-</div><div class="info">There is no active filtering worker or permanent-delete action in v{{ version }}. Rule activation is intentionally unavailable until safe preview, account scoping and IMAP action verification are implemented.</div>
+</div><div class="info">{% if approved_ids %}The imported, unchanged legacy signatures are protected by root-only approval. Newly created rules remain disabled and cannot automatically join live deletion.{% else %}All rules are drafts until separately approved through the protected cleaner policy.{% endif %}</div>
 {% endblock %}

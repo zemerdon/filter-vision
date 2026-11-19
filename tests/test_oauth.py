@@ -59,7 +59,8 @@ def test_microsoft_oauth_device_flow_and_account_remains_inactive(
     assert client.post("/accounts/1/oauth/start", data={"csrf": csrf},
                        follow_redirects=False).status_code == 303
     page = client.get("/accounts/1/oauth").text
-    assert "ABCD-EFGH" in page
+    assert "ABCD-EFGH" not in page  # Device flow is not user-facing.
+    assert "Start Microsoft Sign-In" in page
     assert "D" * 40 not in page
     assert "Microsoft" in page
 
@@ -215,11 +216,11 @@ def test_device_code_page_links_to_official_portal_not_localhost(signed_in, app,
     assert response.status_code == 303
     page = client.get("/accounts/1/oauth")
     assert page.status_code == 200
-    assert "https://microsoft.com/devicelogin" in page.text
+    assert "https://microsoft.com/devicelogin" not in page.text
     assert "https://login.microsoft.com/device" not in page.text
-    assert "ABCD-EFGH" in page.text
-    assert "http://127.0.0.1" not in page.text
-    assert "device-code sign-in" in page.text
+    assert "ABCD-EFGH" not in page.text
+    assert "device-code sign-in" not in page.text.lower()
+    assert "Start Microsoft Sign-In" in page.text
     assert "D" * 60 not in page.text
 
 
@@ -404,7 +405,7 @@ def test_failed_browser_callback_visible_inline_and_safe(
     assert 'role="alert"' in response.text
     assert public_detail in response.text
     assert "Connection not completed" in response.text
-    assert "Start Microsoft Browser Sign-In" in response.text
+    assert "Start Microsoft Sign-In" in response.text
     assert "SECRETCODE" not in response.text
     assert "PRIVATEVERIFIER" not in response.text
     assert "STATE" * 12 not in response.text

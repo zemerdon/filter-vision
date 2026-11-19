@@ -1,14 +1,84 @@
 {% extends "base.html" %}
 {% block title %}Settings{% endblock %}
 {% block content %}
-<div class="heading"><div><p class="eyebrow">INSTANCE CONFIGURATION</p><h1>Settings</h1><p class="muted">Runtime configuration and security status.</p></div></div>
-<div class="panel"><h2>Security</h2><p class="muted">Passwordless administration is enabled. All WebUI requests are restricted to configured trusted source IP networks; browser write operations are protected by signed, Secure, SameSite=Strict cookies and CSRF tokens. Anyone on a trusted network who can reach this service can administer it. Do not expose port 9494 directly to the internet or put it behind an unrestricted public reverse proxy.</p></div>
-<div class="panel"><h2>Capabilities</h2><div class="table-wrap"><table><tbody>
-<tr><td>Offline .eml header analysis</td><td>Available</td></tr>
-<tr><td>Draft account configuration</td><td>Available</td></tr>
-<tr><td>Draft rule storage</td><td>Available</td></tr>
-<tr><td>Microsoft OAuth2 authorization</td><td>Available (read-only IMAP authentication verification)</td></tr>
-<tr><td>IMAP scan / delete</td><td>Disabled by design</td></tr>
-<tr><td>Automatic stable update installation</td><td>Not yet available</td></tr>
-</tbody></table></div></div>
+<div class="heading"><div><p class="eyebrow">INSTANCE CONFIGURATION</p>
+<h1>Settings</h1><p class="muted">Live cleaner controls, scheduling and security.</p></div></div>
+
+<div class="panel" id="cleaner-service">
+  <h2>Cleaner Service</h2>
+  <p class="muted">Systemd-backed status for the root-approved Microsoft Junk cleaner. <a href="/settings#cleaner-service">Refresh status</a> to see the latest result.</p>
+  <div class="service-stats">
+    <div><span>Schedule</span><strong>{{ "Running" if cleaner.schedule_active else ("Paused" if cleaner.available else "Unavailable") }}</strong></div>
+    <div><span>Current scan</span><strong>{{ "Running" if cleaner.scan_running else ( "Idle" if cleaner.available else "Unknown") }}</strong></div>
+    <div><span>Last service result</span><strong>{{ cleaner.service.Result }}</strong></div>
+    <div><span>Approved accounts</span><strong>{{ approved_count }}</strong></div>
+  </div>
+  <div class="key-values">
+    <div><span>Current interval</span><strong>Every {{ cleaner.interval }} minutes</strong></div>
+    <div><span>Next scheduled scan</span><strong>{{ cleaner.timer.NextElapseUSecRealtime if cleaner.schedule_active else "Not scheduled" }}</strong></div>
+    <div><span>Last timer trigger</span><strong>{{ cleaner.timer.LastTriggerUSec }}</strong></div>
+    <div><span>Last scan result</span><strong>{{ last_scan.when if last_scan else "No scan history yet" }}</strong></div>
+    <div><span>Recorded scan failures</span><strong>{{ failed_scans }}</strong></div>
+  </div>
+  {% if last_scan %}<p class="small muted">Last scan: {{ last_scan.detail }}</p>{% endif %}
+  {% if cleaner.last_action %}
+  <div class="{{ 'success' if cleaner.last_action.state == 'success' else ('error' if cleaner.last_action.state == 'failed' else 'info') }}" role="status">
+    <strong>Last control request: {{ cleaner.last_action.action|replace('-', ' ')|title }} — {{ cleaner.last_action.state|title }}</strong>
+    <p>{{ cleaner.last_action.detail }} · {{ cleaner.last_action.updated_at }}</p>
+  </div>
+  {% endif %}
+  {% if cleaner.request_pending %}<p class="info" role="status">A cleaner control operation is queued. Refresh to see its result.</p>{% endif %}
+  <div class="divider-line"></div>
+  <h2>Schedule</h2>
+  <p class="small muted">One schedule controls both approved accounts. Changing the interval does not restart a paused schedule or interrupt a scan.</p>
+  <form method="post" action="/settings/cleaner" class="schedule-form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="action" value="set-interval">
+    <label for="cleaner-interval">Scan every</label>
+    <select id="cleaner-interval" name="interval" {% if not cleaner.control_installed or cleaner.request_pending %}disabled{% endif %}>
+      {% for minutes in intervals %}
+      <option value="{{ minutes }}" {% if minutes == cleaner.interval %}selected{% endif %}>
+        {% if minutes < 60 %}{{ minutes }} minutes{% elif minutes == 60 %}1 hour{% elif minutes < 1440 %}{{ minutes // 60 }} hours{% else %}24 hours{% endif %}
+      </option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="btn" {% if not cleaner.control_installed or cleaner.request_pending %}disabled{% endif %}>Save interval</button>
+  </form>
+  <h2>Service controls</h2>
+  <p class="small muted">Stop pauses future scheduled scans; it does not terminate one already in progress. Restart restarts the schedule, not the application WebUI. Run Now executes the approved live cleaner immediately and can permanently delete matching Junk messages.</p>
+  <div class="service-actions">
+    {% for action, label in [('start','Start Schedule'), ('stop','Stop Schedule'), ('restart','Restart Schedule'), ('run-now','Run Now')] %}
+    <form method="post" action="/settings/cleaner">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="action" value="{{ action }}">
+      {% if action == 'run-now' %}
+      <label class="run-confirm"><input type="checkbox" name="confirm_run" value="yes" required>
+        I understand matching Junk mail will be permanently deleted</label>
+      {% endif %}
+      <button type="submit" class="btn {% if action == 'run-now' %}action-warn{% endif %}"
+        {% if not cleaner.control_installed or cleaner.request_pending or not cleaner.available or (action == 'start' and cleaner.schedule_active) or (action in ('stop','restart') and not cleaner.schedule_active) or (action == 'run-now' and (cleaner.scan_running or approved_count == 0)) %}disabled{% endif %}>
+        {{ label }}
+      </button>
+    </form>
+    {% endfor %}
+  </div>
+  {% if not cleaner.control_installed %}<p class="small muted">Service controls are not installed on this instance. The existing cleaner state is unchanged.</p>{% endif %}
+  <p class="small muted">These buttons manage only Filter Vision's cleaner timer and scan service. They do not start the retired legacy cleaner or change OAuth credentials or rule approvals.</p>
+</div>
+
+<div class="panel"><h2>Capabilities</h2>
+  <div class="table-wrap"><table><tbody>
+    <tr><td>Offline .eml header analysis</td><td>Available</td></tr>
+    <tr><td>Microsoft browser OAuth2 + PKCE</td><td>Available</td></tr>
+    <tr><td>Read-only Junk preview</td><td>Available</td></tr>
+    <tr><td>Legacy exact-header filtering</td><td>{{ "Approved for " ~ approved_count ~ " account(s)" if approved_count else "No accounts approved" }}</td></tr>
+    <tr><td>IMAP scan / UID-specific permanent delete</td><td>{{ "Scheduled" if cleaner.schedule_active and approved_count else ("Paused" if approved_count else "Not approved") }}</td></tr>
+    <tr><td>Stable GitHub WebUI updates</td><td>Available (verified stable updater)</td></tr>
+    <tr><td>Encrypted full-state backup / staging restore</td><td>Available via protected server operations</td></tr>
+  </tbody></table></div>
+</div>
+<div class="panel"><h2>Security</h2>
+  <p class="muted">Passwordless administration is enabled and restricted to trusted source networks. Browser writes require signed Secure SameSite=Strict cookies and CSRF protection. Anyone on an allowed network who reaches this WebUI can request the supported cleaner controls. Do not expose port 9494 to the public internet.</p>
+  <p class="small muted">Schedule controls are executed by a separate root-owned helper with fixed allowed actions. Account and rule deletion approval remains in a protected policy outside the WebUI.</p>
+</div>
 {% endblock %}

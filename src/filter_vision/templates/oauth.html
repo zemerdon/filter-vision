@@ -1,15 +1,13 @@
-{% extends "base.html" %}
-{% block title %}Microsoft Authorization{% endblock %}
 {% block content %}
 <div class="heading"><div><p class="eyebrow">ACCOUNT CONNECTION</p>
-<h1>Microsoft OAuth2</h1>
+<h1>Microsoft Sign-In</h1>
 <p class="muted">Account: {{ account.label }} · {{ account.username }}</p></div>
-<span class="pill">READ-ONLY CONNECTION TEST</span></div>
-<div class="info">Filter Vision will ask Microsoft to authorize this account. It will verify IMAP authentication without reading, moving or deleting messages. The old cleaner remains active until a separately verified cutover.</div>
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<span class="pill">{{ "Cleaning active" if live_active else ("Authorized" if connected else "Authorization required") }}</span></div>
+<div class="info">{% if connected %}Microsoft authorization is already stored securely. You can renew it here without changing the account's cleaning policy.{% else %}Connect securely through Microsoft using the browser sign-in method. Filter Vision checks Outlook IMAP before storing encrypted credentials. Authorization alone does not enable cleaning.{% endif %}</div>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
 {% if notice %}<p class="info">{{ notice }}</p>{% endif %}
 <div class="panel" id="browser-result" tabindex="-1">
-<h2>Browser sign-in (legacy-compatible)</h2>
+<h2>{{ 'Reauthorize Microsoft account' if connected else 'Connect Microsoft account' }}</h2>
 {% if browser_error %}
 <div class="error" role="alert" aria-live="assertive">
 <strong>Connection not completed</strong>
@@ -17,7 +15,7 @@
 <p class="small">No account was enabled or mailbox changed. You can start a new sign-in below.</p>
 </div>
 {% endif %}
-<p class="muted">Recommended for your imported accounts because the original cleaner uses this authorization method. It includes an explicit authorization-code request and PKCE protection, and takes no action on your mail.</p>
+<p class="muted">Uses Microsoft's Authorization Code + PKCE sign-in, already verified for the imported accounts. Your password remains with Microsoft.</p>
 {% if browser_flow %}
 <p><a href="{{ browser_flow.authorization_url }}" target="_blank" rel="noopener noreferrer" class="btn primary">Open Microsoft Browser Sign-In</a></p>
 <p class="muted">After signing in, Microsoft will redirect to the existing app's <strong>localhost</strong> callback. Your browser may say the page is unreachable. That is expected here: copy the <strong>full URL from the address bar</strong>, including its code and state parameters, then paste it below. Do not paste that URL into chat, email or GitHub.</p>
@@ -31,35 +29,10 @@
 {% else %}
 <form method="post" action="/accounts/{{ account.id }}/oauth/browser/start">
 <input type="hidden" name="csrf" value="{{ csrf }}">
-<button type="submit" class="btn">Start Microsoft Browser Sign-In</button>
+<button type="submit" class="btn">{{ 'Start Microsoft Reauthorization' if connected else 'Start Microsoft Sign-In' }}</button>
 </form>
 {% endif %}
-<p class="muted">Only the account you are connecting is affected. No scheduled mailbox deletion is enabled by connecting.</p>
+<p class="muted">Only this account's Microsoft credentials are changed. {% if live_active %}Existing scheduled cleaning continues under the separately protected policy.{% else %}Authorization does not enable automatic deletion.{% endif %}</p>
 </div>
-<div class="panel">
-<h2>Device-code sign-in (alternative)</h2>
-{% if connected %}<p class="success">This account already has encrypted OAuth credentials stored locally. Mail scanning remains disabled.</p>{% endif %}
-{% if flow %}
-<h2>Approve the Microsoft sign-in</h2>
-<p>Open Microsoft's official device sign-in page in a separate browser tab:</p>
-<p><a href="{{ flow.verification_uri }}" target="_blank" rel="noopener noreferrer">{{ flow.verification_uri }}</a></p>
-<p class="muted">This is a device-code sign-in, not a localhost callback. If Microsoft redirects you to 127.0.0.1 or reports a missing response_type, return here, start a new authorization, and open Microsoft's device sign-in page in a private browser window.</p>
-<p>When Microsoft asks for your device code, enter:</p>
-<div class="panel highlight"><h1 class="mono">{{ flow.user_code }}</h1></div>
-<p class="muted">Sign in with the specific Microsoft account shown above. After approval, return here and select Check Authorization.</p>
-<form method="post" action="/accounts/{{ account.id }}/oauth/poll">
-<input type="hidden" name="csrf" value="{{ csrf }}">
-<button class="btn primary" type="submit">Check Authorization</button>
-</form>
-{% else %}
-<h2>Connect your Microsoft account</h2>
-<p class="muted">A new Microsoft authorization is required; the old cleaner's refresh tokens have not been copied. This workflow preserves your account passwords within Microsoft.</p>
-<form method="post" action="/accounts/{{ account.id }}/oauth/start">
-<input type="hidden" name="csrf" value="{{ csrf }}">
-<button class="btn primary" type="submit">{{ "Reauthorize with Microsoft" if connected else "Start Microsoft Authorization" }}</button>
-</form>
-{% endif %}
-</div>
-
 <p><a href="/accounts">Back to Accounts</a></p>
 {% endblock %}

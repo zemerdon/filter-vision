@@ -150,5 +150,6 @@ def test_oauth_and_update_forms_accept_implicit_https_origin_port(app, monkeypat
                             headers=headers, follow_redirects=False).status_code == 303
         page = browser.get("/accounts/1/oauth")
         assert page.status_code == 200
-        assert "F4G7-Q8K9" in page.text
+        assert "F4G7-Q8K9" not in page.text
+        assert "Start Microsoft Sign-In" in page.text
         assert "D" * 40 not in page.text

@@ -1,10 +1,10 @@
 # Filter Vision
 
-A self-hosted, native Debian 13 email-analysis and filtering administration UI.
+A self-hosted, native Debian 13 email-analysis and filtering application with an HTTPS administration console.
 
-**v0.2.0 stable foundation:** passwordless WebUI restricted to trusted source networks, signed HTTPS browser cookies/CSRF, offline EML header analysis, imported account/rule drafts, Microsoft device-code OAuth2 reauthorization with encrypted tokens, read-only Junk rule previews, and the verified GitHub stable updater.
+**v0.2.1 stable candidate:** passwordless trusted-network WebUI, Microsoft browser OAuth2 + PKCE, encrypted account credentials, read-only Junk previews, and carefully root-gated UID-specific deletion of legacy-approved exact-header matches. The web console includes live cleaner status, schedule adjustment, Start/Stop/Restart Schedule, and protected Run Now actions. Root systemd helpers accept only validated fixed operations.
 
-**Important:** Microsoft account authorization and read-only IMAP previews are available, but **scheduled scanning and deletion are not enabled**. Existing mail cleaners must remain running until the new account authorization, rule parity, backup/restore and safe cutover are verified.
+**Important:** New installations do not begin deleting messages automatically. Root-managed rule approval and verified legacy-offline state must be present before any live cleaning action. Existing installations keep their approved cleaner and schedule during updates. Matching messages that are expunged are permanently deleted.
 
 ## Install in an existing Debian 13 LXC
 
@@ -41,3 +41,8 @@ After a pasted OAuth callback fails, Filter Vision redirects directly to a visib
 ## v0.2.0 Legacy-compatible cleaner and recovery
 
 Includes conservative, account-scoped, exact legacy raw-header matching with UIDPLUS-only targeted UID EXPUNGE (never blanket EXPUNGE), root-owned explicit cutover approval, per-mailbox locking and systemd 30-minute scheduling. The cleaner units are installed disabled, requiring verified legacy shutdown and a separate root-owned policy before any live mutation. Also includes full encrypted database/configuration/OAuth vault backup, integrity verification and restore into isolated staging directories. Live permanent deletions cannot be reversed. Both accounts must be authorized and the owner must explicitly approve cutover; no installation alone activates deletion.
+
+
+## v0.2.1 — Cleaner Service and accurate capabilities
+
+Settings exposes the live systemd timer, last scan result, next scheduled scan, and current cleaner process state. The global scan interval can be set to 5, 10, 15, 20, 30, 60, 120, 240, 360, 720 or 1440 minutes. Start, Stop and Restart control the schedule without interrupting an in-flight deletion; Run Now initiates an explicitly confirmed live scan. The privileged root-owned helper validates only fixed actions, enforces the existing protected filtering policy, prevents injected commands, and restores the prior timer configuration if a schedule update fails. Installed WebUI updates, Rules status, Accounts effective schedules, service status and footer now accurately reflect the live filtering capability. Microsoft sign-in offers only the successful browser PKCE method, without invalidating existing tokens.

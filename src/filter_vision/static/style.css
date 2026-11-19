@@ -39,3 +39,21 @@ input,select,textarea{min-width:0;background:#0b161d;border:1px solid #37505b;pa
   .account-table td .pill{white-space:normal}
   .account-table .btn{max-width:100%;white-space:normal}
 }
+
+/* Cleaner status and schedule controls on narrow and wide screens. */
+.service-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:15px 0}
+.service-stats>div{display:flex;flex-direction:column;gap:6px;border:1px solid var(--line);background:#13232d;border-radius:6px;padding:11px;min-width:0}
+.service-stats span,.key-values span{font-size:11px;color:var(--muted)}
+.service-stats strong{font-size:17px;overflow-wrap:anywhere}
+.key-values{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 20px;margin-bottom:15px}
+.key-values>div{display:flex;justify-content:space-between;align-items:baseline;gap:12px;border-bottom:1px solid var(--line);padding:6px 0;min-width:0}
+.key-values strong{font-size:11px;font-weight:600;overflow-wrap:anywhere;text-align:right}
+.divider-line{border-top:1px solid var(--line);margin:20px 0}
+.schedule-form,.service-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:10px 0 22px}
+.schedule-form select{min-width:130px}
+.service-actions form{margin:0}
+.btn.action-warn{border-color:#9f7054;color:#f6caa2}
+@media(max-width:780px){.service-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.key-values{grid-template-columns:1fr}}
+
+.run-confirm{display:flex;align-items:center;gap:7px;color:#e5c5b1;font-size:11px;max-width:250px}
+.run-confirm input{accent-color:#c89877}

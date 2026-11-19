@@ -1,7 +1,7 @@
 """Network-restricted, passwordless Filter Vision WebUI.
 
-Microsoft OAuth2 authorization and read-only IMAP previews are supported;
-no automated message-deleting worker exists in this release.
+Microsoft browser authorization, read-only previews and root-approved
+legacy-compatible live Junk filtering are supported.
 """
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, File, Form, Request, UploadFile, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -34,6 +36,8 @@ from .oauth import (TokenVault, OAuthError, start_device_auth, poll_device_auth,
                     start_browser_auth, redeem_browser_auth)
 from .preview import scan_junk_preview, PreviewError
 from .live import load_policy, LiveSafetyError
+from .control import (control_view, request_control, ControlError,
+                      INTERVALS, ACTIONS, service_status)
 
 # Restrict passwordless administration to explicitly trusted local networks.
 # The installer adds the instance network to the trusted list at deployment.
@@ -194,9 +198,10 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
             account_count = con.execute("SELECT COUNT(*) FROM accounts").fetchone()[0]
             rule_count = con.execute("SELECT COUNT(*) FROM rules").fetchone()[0]
         live_count = len(live_account_ids())
+        schedule_active = service_status()["schedule_active"]
         return render(request, "dashboard.html", active="dashboard", sess=sess,
                       account_count=account_count, rule_count=rule_count,
-                      live_count=live_count)
+                      live_count=live_count, schedule_active=schedule_active)
 
     def live_account_ids():
         try:
@@ -212,12 +217,15 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
         with store.db() as con:
             accounts = [dict(x) for x in con.execute("SELECT * FROM accounts ORDER BY id DESC")]
         live_ids = live_account_ids()
+        schedule = service_status()
         for account in accounts:
             account["oauth_connected"] = app.state.token_vault.connected(account["id"])
             account["preview"] = app.state.previews.get(account["id"])
             account["live_active"] = account["id"] in live_ids
         return render(request, "accounts.html", active="accounts", sess=sess,
-                      accounts=accounts, live_count=len(live_ids))
+                      accounts=accounts, live_count=len(live_ids),
+                      schedule_active=schedule["schedule_active"],
+                      effective_interval=schedule["interval"])
 
     @app.post("/accounts", response_class=HTMLResponse)
     def account_add(request: Request, csrf: str = Form(""), label: str = Form(""),
@@ -282,6 +290,7 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
         return render(request, "oauth.html", active="accounts", sess=sess,
                       account=account, flow=safe_flow, browser_flow=safe_browser,
                       error=error, notice=notice, browser_error=browser_error,
+                      live_active=account["id"] in live_account_ids(),
                       connected=app.state.token_vault.connected(account["id"]))
 
     @app.get("/accounts/{account_id}/oauth", response_class=HTMLResponse)
@@ -524,7 +533,11 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
             return denial
         with store.db() as con:
             rules = [dict(x) for x in con.execute("SELECT * FROM rules ORDER BY id DESC")]
-        return render(request, "rules.html", active="rules", sess=sess, rules=rules)
+        approved = live_account_ids()
+        approved_ids = ({r["id"] for r in rules if r["kind"] == "legacy_raw_header"}
+                        if approved else set())
+        return render(request, "rules.html", active="rules", sess=sess,
+                      rules=rules, approved_ids=approved_ids)
 
     @app.get("/activity", response_class=HTMLResponse)
     def activity(request: Request):
@@ -567,7 +580,7 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
                     or payload.get("prerelease") or payload.get("draft")
                     or payload.get("target_commitish") != "stable"):
                 raise ValueError("Release must be stable branch, not a draft or prerelease")
-            if not url.startswith("https://github.com/zemerdon/filter-vision/releases/tag/"):
+            if url != f"https://github.com/zemerdon/filter-vision/releases/tag/{tag}":
                 raise ValueError("Unexpected release URL")
             app.state.latest = {"tag": tag, "url": url, "error": "",
                                 "is_newer": tuple(map(int, tag[1:].split("."))) >
@@ -599,6 +612,69 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
         sess, denial = guard(request)
         if denial:
             return denial
-        return render(request, "settings.html", active="settings", sess=sess)
+        cleaner = control_view(store.directory)
+        approved = live_account_ids()
+        with store.db() as db:
+            last = db.execute(
+                "SELECT created_at,detail FROM audit_events WHERE event='live_scan' "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            failed_count = db.execute(
+                "SELECT COUNT(*) FROM audit_events WHERE event='live_scan_failed'"
+            ).fetchone()[0]
+        last_scan = None
+        if last:
+            last_scan = {
+                "when": datetime.fromtimestamp(
+                    int(last["created_at"]), ZoneInfo("Australia/Brisbane")
+                ).strftime("%d %b %Y, %I:%M %p AEST"),
+                "detail": str(last["detail"])[:180],
+            }
+        return render(request, "settings.html", active="settings", sess=sess,
+                      cleaner=cleaner, approved_count=len(approved),
+                      intervals=INTERVALS, last_scan=last_scan,
+                      failed_scans=failed_count)
+
+    @app.post("/settings/cleaner", response_class=HTMLResponse)
+    def cleaner_control(request: Request, csrf: str = Form(""),
+                        action: str = Form(""), interval: str = Form(""),
+                        confirm_run: str = Form("")):
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        if not valid_csrf(sess, csrf):
+            return invalid_csrf()
+        if not control_view(store.directory)["control_installed"]:
+            return HTMLResponse("Cleaner service controls are not installed", status_code=503)
+        if action not in ACTIONS:
+            return HTMLResponse("Unsupported cleaner control request", status_code=400)
+        if action == "run-now" and confirm_run != "yes":
+            return HTMLResponse("Confirm that the immediate scan may permanently delete "
+                                "matching Junk mail", status_code=400)
+        if action != "run-now" and confirm_run:
+            return HTMLResponse("Unexpected cleaner control confirmation", status_code=400)
+        try:
+            if action == "set-interval":
+                if not interval.isdecimal():
+                    raise ControlError("Invalid cleaner interval")
+                minutes = int(interval)
+                if minutes not in INTERVALS:
+                    raise ControlError("Unsupported cleaner interval")
+            else:
+                if interval:
+                    raise ControlError("Unexpected cleaner interval")
+                minutes = None
+            accepted = request_control(store.directory, action, minutes)
+        except ControlError:
+            return HTMLResponse("Unsupported cleaner control request", status_code=400)
+        except OSError:
+            return HTMLResponse("Cleaner service control is temporarily unavailable",
+                                status_code=503)
+        if not accepted:
+            return HTMLResponse("Cleaner operation already pending", status_code=409)
+        store.audit("cleaner_control_requested",
+                    f"action={action}" +
+                    (f" interval_minutes={minutes}" if minutes is not None else ""))
+        return RedirectResponse("/settings#cleaner-service", status_code=303)
 
     return app

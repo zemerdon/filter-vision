@@ -226,6 +226,11 @@ systemctl enable "$SERVICE" >/dev/null
 if [[ -f /etc/systemd/system/filter-vision-update.path ]]; then
   systemctl enable --now filter-vision-update.path >/dev/null
 fi
+# System-control requests are processed by a root-owned, fixed-action handler.
+# This never starts/stops the cleaning timer merely because an app is updated.
+if [[ -f "$target/filter-vision/packaging/install-controls.sh" ]]; then
+  bash "$target/filter-vision/packaging/install-controls.sh"
+fi
 restore() {
   if [[ -n "$previous" && -d "$previous" ]]; then
     ln -s "$previous" "$ROOT/.rollback.$$"
