@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Microsoft Authorization{% endblock %}
+{% block content %}
+<div class="heading"><div><p class="eyebrow">ACCOUNT CONNECTION</p>
+<h1>Microsoft OAuth2</h1>
+<p class="muted">Account: {{ account.label }} · {{ account.username }}</p></div>
+<span class="pill">READ-ONLY CONNECTION TEST</span></div>
+<div class="info">Filter Vision will ask Microsoft to authorize this account. It will verify IMAP authentication without reading, moving or deleting messages. The old cleaner remains active until a separately verified cutover.</div>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if notice %}<p class="info">{{ notice }}</p>{% endif %}
+<div class="panel">
+{% if connected %}<p class="success">This account already has encrypted OAuth credentials stored locally. Mail scanning remains disabled.</p>{% endif %}
+{% if flow %}
+<h2>Approve the Microsoft sign-in</h2>
+<p>Open <a href="{{ flow.verification_uri }}" target="_blank" rel="noopener noreferrer">{{ flow.verification_uri }}</a> on your phone or computer.</p>
+<p>When Microsoft asks for your device code, enter:</p>
+<div class="panel highlight"><h1 class="mono">{{ flow.user_code }}</h1></div>
+<p class="muted">Sign in with the specific Microsoft account shown above. After approval, return here and select Check Authorization.</p>
+<form method="post" action="/accounts/{{ account.id }}/oauth/poll">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<button class="btn primary" type="submit">Check Authorization</button>
+</form>
+{% else %}
+<h2>Connect your Microsoft account</h2>
+<p class="muted">A new Microsoft authorization is required; the old cleaner's refresh tokens have not been copied. This workflow preserves your account passwords within Microsoft.</p>
+<form method="post" action="/accounts/{{ account.id }}/oauth/start">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<button class="btn primary" type="submit">{{ "Reauthorize with Microsoft" if connected else "Start Microsoft Authorization" }}</button>
+</form>
+{% endif %}
+</div>
+<p><a href="/accounts">Back to Accounts</a></p>
+{% endblock %}

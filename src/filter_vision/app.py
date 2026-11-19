@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import ipaddress
+import threading
 import json
 import os
 import re
@@ -17,7 +18,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import FastAPI, File, Form, Request, UploadFile, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -26,6 +27,8 @@ from . import __version__
 from .analysis import MAX_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES, inspect_eml, suggestions, validate_rule
 from .storage import Store
 from .updates import status as update_status, request_update
+from .oauth import (TokenVault, OAuthError, start_device_auth, poll_device_auth,
+                    verify_imap_auth)
 
 # Restrict passwordless administration to explicitly trusted local networks.
 # The installer adds the instance network to the trusted list at deployment.
@@ -43,6 +46,10 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
     app = FastAPI(title="Filter Vision", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store = store
     app.state.latest = {}
+    app.state.oauth_flows = {}
+    app.state.previews = {}
+    app.state.oauth_lock = threading.RLock()
+    app.state.token_vault = TokenVault(store.directory)
     trusted = tuple(ipaddress.ip_network(c.strip(), strict=False) for c in
                     os.environ.get("FV_TRUSTED_CIDRS", TRUSTED_DEFAULT).split(",") if c.strip())
     if not trusted:
@@ -151,6 +158,9 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
             return denial
         with store.db() as con:
             accounts = [dict(x) for x in con.execute("SELECT * FROM accounts ORDER BY id DESC")]
+        for account in accounts:
+            account["oauth_connected"] = app.state.token_vault.connected(account["id"])
+            account["preview"] = app.state.previews.get(account["id"])
         return render(request, "accounts.html", active="accounts", sess=sess, accounts=accounts)
 
     @app.post("/accounts", response_class=HTMLResponse)
@@ -175,6 +185,118 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
                         (label.strip(), provider, host.lower(), port, username.strip(),
                          folder.strip(), interval, int(time.time())))
         store.audit("account_draft_created", "A disabled account connection draft was saved")
+        return RedirectResponse("/accounts", status_code=303)
+
+    def oauth_account(account_id: int) -> dict:
+        with store.db() as con:
+            account = con.execute(
+                "SELECT id,label,provider,username FROM accounts WHERE id=?", (account_id,)
+            ).fetchone()
+        if not account or account["provider"] != "outlook":
+            raise HTTPException(status_code=404, detail="Microsoft account not found")
+        return dict(account)
+
+    def oauth_page(request: Request, account: dict, error=None, notice=None):
+        sess = session(request)
+        with app.state.oauth_lock:
+            pending = app.state.oauth_flows.get(account["id"])
+            if pending and pending["expires_at"] <= int(time.time()):
+                app.state.oauth_flows.pop(account["id"], None)
+                pending = None
+            safe_flow = {
+                "user_code": pending["user_code"],
+                "verification_uri": pending["verification_uri"],
+                "expires_at": pending["expires_at"],
+            } if pending else None
+        return render(request, "oauth.html", active="accounts", sess=sess,
+                      account=account, flow=safe_flow, error=error, notice=notice,
+                      connected=app.state.token_vault.connected(account["id"]))
+
+    @app.get("/accounts/{account_id}/oauth", response_class=HTMLResponse)
+    def oauth_view(request: Request, account_id: int):
+        return oauth_page(request, oauth_account(account_id))
+
+    @app.post("/accounts/{account_id}/oauth/start", response_class=HTMLResponse)
+    def oauth_start(request: Request, account_id: int, csrf: str = Form("")):
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        if not valid_csrf(sess, csrf):
+            return invalid_csrf()
+        account = oauth_account(account_id)
+        try:
+            flow = start_device_auth(account["username"])
+        except OAuthError as error:
+            return oauth_page(request, account, error=str(error))
+        with app.state.oauth_lock:
+            app.state.oauth_flows[account_id] = flow
+        return RedirectResponse(f"/accounts/{account_id}/oauth", status_code=303)
+
+    @app.post("/accounts/{account_id}/oauth/poll", response_class=HTMLResponse)
+    def oauth_poll(request: Request, account_id: int, csrf: str = Form("")):
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        if not valid_csrf(sess, csrf):
+            return invalid_csrf()
+        account = oauth_account(account_id)
+        with app.state.oauth_lock:
+            flow = app.state.oauth_flows.get(account_id)
+            if not flow:
+                return oauth_page(request, account, error="Start Microsoft authorization first")
+            try:
+                result = poll_device_auth(flow)
+            except OAuthError as error:
+                return oauth_page(request, account, error=str(error))
+            if result["pending"]:
+                message = result["detail"]
+            else:
+                message = None
+                tokens = result["tokens"]
+        if message:
+            return oauth_page(request, account, notice=message)
+        try:
+            verify_imap_auth(account["username"], tokens["access_token"])
+            app.state.token_vault.save(account_id, tokens)
+        except OAuthError as error:
+            return oauth_page(request, account, error=str(error))
+        finally:
+            # Avoid leaving authorization response references after completion.
+            tokens.clear()
+        with app.state.oauth_lock:
+            app.state.oauth_flows.pop(account_id, None)
+        store.audit("microsoft_oauth_connected", "Account OAuth2 and read-only IMAP authentication verified")
+        return RedirectResponse("/accounts", status_code=303)
+
+    @app.post("/accounts/{account_id}/preview", response_class=HTMLResponse)
+    def preview_account(request: Request, account_id: int, csrf: str = Form("")):
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        if not valid_csrf(sess, csrf):
+            return invalid_csrf()
+        account = oauth_account(account_id)
+        if not app.state.token_vault.connected(account_id):
+            return HTMLResponse("Authorize this account with Microsoft first", status_code=409)
+        with store.db() as con:
+            account_row = con.execute("SELECT folder FROM accounts WHERE id=?",
+                                      (account_id,)).fetchone()
+            rules = [dict(row) for row in con.execute(
+                "SELECT r.id,r.kind,r.pattern FROM rules r "
+                "JOIN rule_scopes s ON s.rule_id=r.id "
+                "WHERE s.account_id=? AND r.kind='legacy_raw_header' "
+                "ORDER BY r.id", (account_id,)
+            )]
+        try:
+            token = access_token_for(account_id, account["username"], app.state.token_vault)
+            result = scan_junk_preview(account["username"], account_row["folder"], rules, token)
+        except (OAuthError, PreviewError):
+            return HTMLResponse("Read-only preview failed; check account authorization and Junk access",
+                                status_code=502)
+        app.state.previews[account_id] = result
+        store.audit("read_only_preview",
+                    f"Examined {result['examined']}, matched {result['matched']}, "
+                    f"truncated={result['truncated']}")
         return RedirectResponse("/accounts", status_code=303)
 
     @app.get("/analyze", response_class=HTMLResponse)

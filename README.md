@@ -2,9 +2,9 @@
 
 A self-hosted, native Debian 13 email-analysis and filtering administration UI.
 
-**v0.1.3 stable foundation:** passwordless WebUI restricted to trusted source networks, signed HTTPS browser cookies/CSRF, offline multi-file EML header analysis, disabled account/rule drafts, legacy noncredential configuration importer, activity history, GitHub stable-only update checks and a fixed-action root update service.
+**v0.1.4 stable foundation:** passwordless WebUI restricted to trusted source networks, signed HTTPS browser cookies/CSRF, offline EML header analysis, imported account/rule drafts, Microsoft device-code OAuth2 reauthorization with encrypted tokens, read-only Junk rule previews, and the verified GitHub stable updater.
 
-**Important:** Live OAuth2/IMAP connectivity, scheduled scanning and deletion are **not enabled in this release**. Existing mail cleaners must remain running until migration is verified.
+**Important:** Microsoft account authorization and read-only IMAP previews are available, but **scheduled scanning and deletion are not enabled**. Existing mail cleaners must remain running until the new account authorization, rule parity, backup/restore and safe cutover are verified.
 
 ## Install in an existing Debian 13 LXC
 

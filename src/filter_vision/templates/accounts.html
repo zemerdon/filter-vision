@@ -1,12 +1,25 @@
 {% extends "base.html" %}
 {% block title %}Accounts{% endblock %}
 {% block content %}
-<div class="heading"><div><p class="eyebrow">MAIL CONNECTIONS</p><h1>Accounts</h1><p class="muted">Multiple independent IMAP accounts — configuration only in this release.</p></div><span class="pill">CONNECTIONS DISABLED</span></div>
-<div class="info">Account settings can be saved as drafts. OAuth2, connection testing, scanning and mailbox deletion are <strong>not implemented or enabled</strong> in v{{ version }}.</div>
+<div class="heading"><div><p class="eyebrow">MAIL CONNECTIONS</p><h1>Accounts</h1><p class="muted">Your imported Microsoft accounts and independently configurable mailbox drafts.</p></div><span class="pill">SCANNING DISABLED</span></div>
+<div class="info">Microsoft device authorization is available. Select <strong>Connect Microsoft</strong> and approve each account in your browser. Filter Vision validates IMAP authentication read-only. The old cleaner remains active, while scanning and permanent deletion are still disabled here.</div>
 <div class="panel"><h2>Account drafts</h2>
 {% if accounts %}
-<div class="table-wrap"><table><thead><tr><th>Label</th><th>Provider</th><th>IMAP host</th><th>Folder</th><th>Interval</th><th>Status</th></tr></thead>
-<tbody>{% for a in accounts %}<tr><td>{{ a.label }}</td><td>{{ a.provider }}</td><td>{{ a.host }}:{{ a.port }}</td><td>{{ a.folder }}</td><td>{{ a.interval_minutes }} min</td><td><span class="pill">Not connected</span></td></tr>{% endfor %}</tbody></table></div>
+<div class="table-wrap"><table><thead><tr><th>Label</th><th>Provider</th><th>IMAP host</th><th>Folder</th><th>Interval</th><th>Connection</th><th>Action</th></tr></thead>
+<tbody>{% for a in accounts %}<tr><td>{{ a.label }}</td><td>{{ a.provider }}</td><td>{{ a.host }}:{{ a.port }}</td><td>{{ a.folder }}</td><td>{{ a.interval_minutes }} min</td><td><span class="pill">{{ "Authorized · inactive" if a.oauth_connected else "Needs authorization" }}</span></td>
+<td>
+{% if a.provider == "outlook" %}
+<a class="btn small-btn" href="/accounts/{{ a.id }}/oauth">{{ "Reauthorize" if a.oauth_connected else "Connect Microsoft" }}</a>
+{% if a.oauth_connected %}
+<form method="post" action="/accounts/{{ a.id }}/preview">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<button type="submit" class="btn small-btn">Test Junk (read-only)</button>
+</form>
+{% endif %}
+{% else %}<span class="pill">Coming later</span>{% endif %}
+{% if a.preview %}<span class="muted small">Examined {{ a.preview.examined }} / {{ a.preview.total_junk_uids }} · Matched {{ a.preview.matched }}{% if a.preview.truncated %} · Partial preview{% endif %}</span>{% endif %}
+</td>
+</tr>{% endfor %}</tbody></table></div>
 {% else %}<p class="empty">No account drafts configured yet.</p>{% endif %}
 </div>
 <div class="panel"><h2>Add account draft</h2>
