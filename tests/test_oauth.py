@@ -221,3 +221,139 @@ def test_device_code_page_links_to_official_portal_not_localhost(signed_in, app,
     assert "http://127.0.0.1" not in page.text
     assert "device-code sign-in" in page.text
     assert "D" * 60 not in page.text
+
+
+def _legacy_browser_test_config(tmp_path, monkeypatch):
+    from pathlib import Path
+    path = Path(tmp_path) / "oauth-clients.json"
+    path.write_text(json.dumps({"sample@hotmail.com": {
+        "client_id": "12345678-1234-1234-1234-123456789000",
+        "permission_url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        "token_url": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        "oauth2_scope": "https://outlook.office.com/IMAP.AccessAsUser.All offline_access",
+        "redirect_uri": "https://localhost",
+    }}))
+    monkeypatch.setenv("FV_OAUTH_CLIENTS_PATH", str(path))
+    return path
+
+
+def test_browser_auth_pkce_authorize_url_contains_required_fields(tmp_path, monkeypatch):
+    import urllib.parse
+    _legacy_browser_test_config(tmp_path, monkeypatch)
+    flow = oauth.start_browser_auth("sample@hotmail.com")
+    parsed = urllib.parse.urlsplit(flow["authorization_url"])
+    assert parsed.scheme == "https"
+    assert parsed.hostname == "login.microsoftonline.com"
+    assert parsed.path.endswith("/authorize")
+    q = urllib.parse.parse_qs(parsed.query)
+    assert q["response_type"] == ["code"]
+    assert q["response_mode"] == ["query"]
+    assert q["redirect_uri"] == ["https://localhost"]
+    assert q["code_challenge_method"] == ["S256"]
+    assert q["scope"] == [
+        "https://outlook.office.com/IMAP.AccessAsUser.All offline_access"
+    ]
+    assert q["prompt"] == ["select_account"]
+    assert q["state"] == [flow["state"]]
+    import base64
+    import hashlib
+    actual_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(flow["verifier"].encode()).digest()
+    ).decode().rstrip("=")
+    assert q["code_challenge"] == [actual_challenge]
+    assert flow["verifier"] not in flow["authorization_url"]
+
+
+def test_browser_auth_code_state_check_and_token_redemption(tmp_path, monkeypatch):
+    import urllib.parse
+    _legacy_browser_test_config(tmp_path, monkeypatch)
+    flow = oauth.start_browser_auth("sample@hotmail.com")
+    calls = []
+    def fake_post(url, fields, timeout=18):
+        calls.append((url, fields))
+        return {"access_token": "A" * 120, "refresh_token": "R" * 120,
+                "expires_in": 3600}
+    monkeypatch.setattr(oauth, "_json_post", fake_post)
+    good_callback = "https://localhost?"+urllib.parse.urlencode({
+        "code": "C" * 110, "state": flow["state"],
+        "session_state": "not-used",
+    })
+    for bad_url in [
+        good_callback.replace("https://localhost?", "http://localhost?"),
+        good_callback.replace("https://localhost?", "https://attacker.invalid?"),
+        good_callback.replace("state="+flow["state"], "state=bad"),
+        "https://localhost?error=invalid_request&error_description=missing_response_type",
+        "https://localhost?code="+"C"*110+"&state=wrong&state="+flow["state"],
+    ]:
+        with pytest.raises(OAuthError):
+            oauth.redeem_browser_auth(flow, bad_url)
+    assert calls == []
+    result = oauth.redeem_browser_auth(flow, good_callback)
+    assert result["refresh_token"] == "R" * 120
+    assert len(calls) == 1
+    token_url, fields = calls[0]
+    assert token_url.endswith("/token")
+    assert fields["grant_type"] == "authorization_code"
+    assert fields["code"] == "C" * 110
+    assert fields["redirect_uri"] == "https://localhost"
+    assert fields["code_verifier"] == flow["verifier"]
+    assert "client_secret" not in fields
+
+
+def test_browser_auth_rejects_unknown_remote_redirect(tmp_path, monkeypatch):
+    config = _legacy_browser_test_config(tmp_path, monkeypatch)
+    payload = json.loads(config.read_text())
+    payload["sample@hotmail.com"]["redirect_uri"] = "https://evil.invalid/redirect"
+    config.write_text(json.dumps(payload))
+    with pytest.raises(OAuthError, match="not a local callback"):
+        oauth.start_browser_auth("sample@hotmail.com")
+
+
+def test_browser_auth_webui_flow_and_one_time_consumption(signed_in, app, tmp_path,
+                                                         monkeypatch):
+    import importlib
+    import urllib.parse
+    _legacy_browser_test_config(tmp_path, monkeypatch)
+    client, csrf = signed_in
+    webui = importlib.import_module("filter_vision.app")
+    with app.state.store.db() as con:
+        con.execute(
+            "INSERT INTO accounts(label,provider,host,port,username,folder,interval_minutes,"
+            "enabled,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            ("Imported", "outlook", "outlook.office365.com", 993,
+             "sample@hotmail.com", "Junk", 30, 0, 1),
+        )
+    assert client.post("/accounts/1/oauth/browser/start", data={"csrf": "wrong"}).status_code == 403
+    response = client.post("/accounts/1/oauth/browser/start", data={"csrf": csrf},
+                           follow_redirects=False)
+    assert response.status_code == 303
+    page = client.get("/accounts/1/oauth")
+    assert "Open Microsoft Browser Sign-In" in page.text
+    assert "response_type=code" in page.text
+    assert "Paste the complete localhost callback URL" in page.text
+    flow = app.state.oauth_code_flows[1]
+    callback = "https://localhost?" + urllib.parse.urlencode({
+        "code": "C" * 120, "state": flow["state"],
+    })
+    validated = []
+    monkeypatch.setattr(webui, "verify_imap_auth",
+                        lambda email, token: validated.append((email, token)))
+    monkeypatch.setattr(webui, "redeem_browser_auth",
+                        lambda flow, callback_url: {
+                            "access_token": "A" * 120,
+                            "refresh_token": "R" * 120, "expires_in": 3600,
+                        })
+    response = client.post("/accounts/1/oauth/browser/finish", data={
+        "csrf": csrf, "callback_url": callback,
+    }, follow_redirects=False)
+    assert response.status_code == 303
+    assert validated == [("sample@hotmail.com", "A" * 120)]
+    assert app.state.token_vault.connected(1)
+    assert 1 not in app.state.oauth_code_flows
+    with app.state.store.db() as con:
+        assert con.execute("SELECT enabled FROM accounts WHERE id=1").fetchone()[0] == 0
+    replay = client.post("/accounts/1/oauth/browser/finish", data={
+        "csrf": csrf, "callback_url": callback,
+    })
+    assert replay.status_code == 200
+    assert "Start a fresh browser sign-in first" in replay.text

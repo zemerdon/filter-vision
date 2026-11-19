@@ -9,6 +9,27 @@
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
 {% if notice %}<p class="info">{{ notice }}</p>{% endif %}
 <div class="panel">
+<h2>Browser sign-in (legacy-compatible)</h2>
+<p class="muted">Recommended for your imported accounts because the original cleaner uses this authorization method. It includes an explicit authorization-code request and PKCE protection, and takes no action on your mail.</p>
+{% if browser_flow %}
+<p><a href="{{ browser_flow.authorization_url }}" target="_blank" rel="noopener noreferrer" class="btn primary">Open Microsoft Browser Sign-In</a></p>
+<p class="muted">After signing in, Microsoft will redirect to the existing app's <strong>localhost</strong> callback. Your browser may say the page is unreachable. That is expected here: copy the <strong>full URL from the address bar</strong>, including its code and state parameters, then paste it below. Do not paste that URL into chat, email or GitHub.</p>
+<form method="post" action="/accounts/{{ account.id }}/oauth/browser/finish">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="ms_callback">Microsoft callback URL (kept private)</label>
+<textarea id="ms_callback" name="callback_url" rows="3" required autocomplete="off" spellcheck="false" placeholder="Paste the complete localhost callback URL"></textarea>
+<button type="submit" class="btn primary">Finish Browser Authorization</button>
+</form>
+{% else %}
+<form method="post" action="/accounts/{{ account.id }}/oauth/browser/start">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<button type="submit" class="btn">Start Microsoft Browser Sign-In</button>
+</form>
+{% endif %}
+<p class="muted">Only the account you are connecting is affected. No scheduled mailbox deletion is enabled by connecting.</p>
+</div>
+<div class="panel">
+<h2>Device-code sign-in (alternative)</h2>
 {% if connected %}<p class="success">This account already has encrypted OAuth credentials stored locally. Mail scanning remains disabled.</p>{% endif %}
 {% if flow %}
 <h2>Approve the Microsoft sign-in</h2>
@@ -31,5 +52,6 @@
 </form>
 {% endif %}
 </div>
+
 <p><a href="/accounts">Back to Accounts</a></p>
 {% endblock %}

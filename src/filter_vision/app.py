@@ -30,7 +30,8 @@ from .analysis import MAX_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES, inspect_eml, s
 from .storage import Store
 from .updates import status as update_status, request_update
 from .oauth import (TokenVault, OAuthError, start_device_auth, poll_device_auth,
-                    verify_imap_auth, access_token_for)
+                    verify_imap_auth, access_token_for,
+                    start_browser_auth, redeem_browser_auth)
 from .preview import scan_junk_preview, PreviewError
 
 # Restrict passwordless administration to explicitly trusted local networks.
@@ -87,6 +88,7 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
     app.state.store = store
     app.state.latest = {}
     app.state.oauth_flows = {}
+    app.state.oauth_code_flows = {}
     app.state.previews = {}
     app.state.oauth_lock = threading.RLock()
     app.state.token_vault = TokenVault(store.directory)
@@ -251,8 +253,17 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
                 "verification_uri": "https://microsoft.com/devicelogin",
                 "expires_at": pending["expires_at"],
             } if pending else None
+            browser_flow = app.state.oauth_code_flows.get(account["id"])
+            if browser_flow and browser_flow["expires_at"] <= int(time.time()):
+                app.state.oauth_code_flows.pop(account["id"], None)
+                browser_flow = None
+            safe_browser = {
+                "authorization_url": browser_flow["authorization_url"],
+                "expires_at": browser_flow["expires_at"],
+            } if browser_flow and browser_flow["owner_csrf"] == sess["csrf"] else None
         return render(request, "oauth.html", active="accounts", sess=sess,
-                      account=account, flow=safe_flow, error=error, notice=notice,
+                      account=account, flow=safe_flow, browser_flow=safe_browser,
+                      error=error, notice=notice,
                       connected=app.state.token_vault.connected(account["id"]))
 
     @app.get("/accounts/{account_id}/oauth", response_class=HTMLResponse)
@@ -309,6 +320,52 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
         with app.state.oauth_lock:
             app.state.oauth_flows.pop(account_id, None)
         store.audit("microsoft_oauth_connected", "Account OAuth2 and read-only IMAP authentication verified")
+        return RedirectResponse("/accounts", status_code=303)
+
+    @app.post("/accounts/{account_id}/oauth/browser/start", response_class=HTMLResponse)
+    def oauth_browser_start(request: Request, account_id: int, csrf: str = Form("")):
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        if not valid_csrf(sess, csrf):
+            return invalid_csrf()
+        account = oauth_account(account_id)
+        try:
+            flow = start_browser_auth(account["username"])
+        except OAuthError as error:
+            return oauth_page(request, account, error=str(error))
+        flow["owner_csrf"] = sess["csrf"]
+        with app.state.oauth_lock:
+            app.state.oauth_code_flows[account_id] = flow
+        return RedirectResponse(f"/accounts/{account_id}/oauth", status_code=303)
+
+    @app.post("/accounts/{account_id}/oauth/browser/finish", response_class=HTMLResponse)
+    def oauth_browser_finish(request: Request, account_id: int,
+                             csrf: str = Form(""), callback_url: str = Form("")):
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        if not valid_csrf(sess, csrf):
+            return invalid_csrf()
+        account = oauth_account(account_id)
+        with app.state.oauth_lock:
+            flow = app.state.oauth_code_flows.pop(account_id, None)
+        if not flow or flow["owner_csrf"] != sess["csrf"]:
+            return oauth_page(request, account, error="Start a fresh browser sign-in first")
+        tokens = None
+        try:
+            tokens = redeem_browser_auth(flow, callback_url)
+            verify_imap_auth(account["username"], tokens["access_token"])
+            app.state.token_vault.save(account_id, tokens)
+        except OAuthError as error:
+            return oauth_page(request, account, error=str(error))
+        finally:
+            if tokens is not None:
+                tokens.clear()
+            # Discard verifier and OAuth state after exactly one callback attempt.
+            flow.clear()
+        store.audit("microsoft_oauth_connected",
+                    "Browser authorization + read-only IMAP authentication verified")
         return RedirectResponse("/accounts", status_code=303)
 
     @app.post("/accounts/{account_id}/preview", response_class=HTMLResponse)

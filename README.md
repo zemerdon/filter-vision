@@ -2,7 +2,7 @@
 
 A self-hosted, native Debian 13 email-analysis and filtering administration UI.
 
-**v0.1.7 stable foundation:** passwordless WebUI restricted to trusted source networks, signed HTTPS browser cookies/CSRF, offline EML header analysis, imported account/rule drafts, Microsoft device-code OAuth2 reauthorization with encrypted tokens, read-only Junk rule previews, and the verified GitHub stable updater.
+**v0.1.8 stable foundation:** passwordless WebUI restricted to trusted source networks, signed HTTPS browser cookies/CSRF, offline EML header analysis, imported account/rule drafts, Microsoft device-code OAuth2 reauthorization with encrypted tokens, read-only Junk rule previews, and the verified GitHub stable updater.
 
 **Important:** Microsoft account authorization and read-only IMAP previews are available, but **scheduled scanning and deletion are not enabled**. Existing mail cleaners must remain running until the new account authorization, rule parity, backup/restore and safe cutover are verified.
 
@@ -29,3 +29,7 @@ Accepts Microsoft's verified HTTPS device-login hostname login.microsoft.com in 
 ## v0.1.7 Microsoft device-code usability and IMAP XOAUTH2 fix
 
 Use the official Microsoft device-login URL displayed alongside the device user code. Never use a 127.0.0.1 callback for the device-code flow. Corrected the XOAUTH2 SASL separator bytes for real Outlook IMAP authentication, with regression tests protecting the protocol payload. Existing cleaner and mail deletion remain unchanged.
+
+## v0.1.8 Microsoft browser sign-in fallback
+
+Added an alternative Microsoft authorization-code flow using the existing, explicitly configured localhost redirect and PKCE (S256). After signing in, users can privately paste the redirected callback URL back into Filter Vision over HTTPS for state verification and single-use token redemption. The browser code is not stored in logs, Git, or account rows. The original device-code flow remains available; both ways still require successful read-only IMAP authentication before encrypted credentials are saved. No cleaner scheduler or mailbox delete action is activated.

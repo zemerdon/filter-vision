@@ -5,6 +5,9 @@ Imported accounts remain inactive for scanning until separately validated.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -182,6 +185,108 @@ def start_device_auth(email: str) -> dict:
         "settings": settings,
     }
 
+
+
+def start_browser_auth(email: str) -> dict:
+    """Build an authorization-code + PKCE flow using the registered legacy redirect.
+
+    The existing client's redirect points at the user's own localhost, not
+    the Filter Vision LXC. The browser's returned URL must be pasted back
+    through an authenticated (CSRF-guarded) WebUI POST; there is no listener
+    or credential exchange on the localhost redirect.
+    """
+    settings = client_settings(email)
+    try:
+        records = json.loads(_config_path().read_bytes())
+        redirect = records[email].get("redirect_uri")
+    except (OSError, ValueError, KeyError, TypeError):
+        raise OAuthError("Microsoft legacy redirect configuration unavailable") from None
+    if not isinstance(redirect, str) or len(redirect) > 256:
+        raise OAuthError("Invalid configured redirect URI")
+    parsed = urllib.parse.urlsplit(redirect)
+    if (parsed.scheme not in ("http", "https")
+            or parsed.hostname not in ("localhost", "127.0.0.1")
+            or parsed.username or parsed.password or parsed.query or parsed.fragment):
+        raise OAuthError("The existing Microsoft redirect is not a local callback")
+    if not redirect.startswith(("http://localhost", "http://127.0.0.1",
+                               "https://localhost", "https://127.0.0.1")):
+        raise OAuthError("Unsupported local redirect URI")
+    verifier = secrets.token_urlsafe(48)
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode("ascii")).digest()
+    ).decode("ascii").rstrip("=")
+    state = secrets.token_urlsafe(32)
+    query = urllib.parse.urlencode({
+        "client_id": settings["client_id"],
+        "response_type": "code",
+        "redirect_uri": redirect,
+        "response_mode": "query",
+        "scope": settings["scope"],
+        "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "prompt": "select_account",
+        "login_hint": email,
+    })
+    # The authority/tenant is the same trusted one used by the legacy client.
+    authorization_url = settings["device_url"].removesuffix("/devicecode") + "/authorize?" + query
+    return {
+        "authorization_url": authorization_url,
+        "redirect_uri": redirect,
+        "token_url": settings["token_url"],
+        "client_id": settings["client_id"],
+        "state": state,
+        "verifier": verifier,
+        "expires_at": int(time.time()) + 600,
+    }
+
+
+def redeem_browser_auth(flow: dict, callback_url: str) -> dict:
+    """Redeem only a one-time state-verified code from the configured redirect."""
+    if int(time.time()) >= flow["expires_at"]:
+        raise OAuthError("Browser sign-in expired; start again")
+    if not isinstance(callback_url, str) or not 30 <= len(callback_url) <= 8192:
+        raise OAuthError("Paste the complete localhost callback URL from your browser")
+    try:
+        got = urllib.parse.urlsplit(callback_url.strip())
+        expected = urllib.parse.urlsplit(flow["redirect_uri"])
+        got_host = (got.scheme, got.hostname, got.port, got.path or "/")
+        expected_host = (expected.scheme, expected.hostname, expected.port, expected.path or "/")
+    except ValueError:
+        raise OAuthError("Invalid callback address") from None
+    if got_host != expected_host or got.fragment or got.username or got.password:
+        raise OAuthError("Callback address does not match the registered Microsoft redirect")
+    try:
+        query = urllib.parse.parse_qs(got.query, keep_blank_values=True, strict_parsing=True)
+    except ValueError:
+        raise OAuthError("Invalid Microsoft callback parameters") from None
+    if any(len(vals) != 1 for vals in query.values()):
+        raise OAuthError("Unexpected repeated Microsoft callback parameter")
+    if "error" in query:
+        code = query["error"][0]
+        if not re.fullmatch(r"[a-zA-Z_]{3,80}", code):
+            code = "unknown"
+        raise OAuthError("Microsoft denied browser authorization: " + code)
+    returned_state = query.get("state", [""])[0]
+    if (not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", returned_state)
+            or not hmac.compare_digest(returned_state, flow["state"])):
+        raise OAuthError("Authorization state mismatch: do not reuse this callback")
+    code = query.get("code", [""])[0]
+    if not 20 <= len(code) <= 4096:
+        raise OAuthError("Microsoft did not return a valid authorization code")
+    response = _json_post(flow["token_url"], {
+        "grant_type": "authorization_code",
+        "client_id": flow["client_id"],
+        "code": code,
+        "redirect_uri": flow["redirect_uri"],
+        "code_verifier": flow["verifier"],
+    })
+    if "_error" in response:
+        raise OAuthError("Microsoft could not redeem the browser authorization: "
+                         + response["_error"])
+    if not response.get("refresh_token"):
+        raise OAuthError("Microsoft did not return a refresh token")
+    return response
 
 def poll_device_auth(flow: dict) -> dict:
     now = int(time.time())
