@@ -2,7 +2,7 @@
 
 A self-hosted, native Debian 13 email-analysis and filtering application with an HTTPS administration console.
 
-**v0.2.1 stable candidate:** passwordless trusted-network WebUI, Microsoft browser OAuth2 + PKCE, encrypted account credentials, read-only Junk previews, and carefully root-gated UID-specific deletion of legacy-approved exact-header matches. The web console includes live cleaner status, schedule adjustment, Start/Stop/Restart Schedule, and protected Run Now actions. Root systemd helpers accept only validated fixed operations.
+**v0.2.2 stable:** passwordless trusted-network WebUI, Microsoft browser OAuth2 + PKCE, encrypted account credentials, read-only Junk previews, and carefully root-gated UID-specific deletion of legacy-approved exact-header matches. The web console includes live cleaner status, schedule adjustment, Start/Stop/Restart Schedule, and protected Run Now actions. Root systemd helpers accept only validated fixed operations.
 
 **Important:** New installations do not begin deleting messages automatically. Root-managed rule approval and verified legacy-offline state must be present before any live cleaning action. Existing installations keep their approved cleaner and schedule during updates. Matching messages that are expunged are permanently deleted.
 
@@ -46,3 +46,12 @@ Includes conservative, account-scoped, exact legacy raw-header matching with UID
 ## v0.2.1 — Cleaner Service and accurate capabilities
 
 Settings exposes the live systemd timer, last scan result, next scheduled scan, and current cleaner process state. The global scan interval can be set to 5, 10, 15, 20, 30, 60, 120, 240, 360, 720 or 1440 minutes. Start, Stop and Restart control the schedule without interrupting an in-flight deletion; Run Now initiates an explicitly confirmed live scan. The privileged root-owned helper validates only fixed actions, enforces the existing protected filtering policy, prevents injected commands, and restores the prior timer configuration if a schedule update fails. Installed WebUI updates, Rules status, Accounts effective schedules, service status and footer now accurately reflect the live filtering capability. Microsoft sign-in offers only the successful browser PKCE method, without invalidating existing tokens.
+
+
+## v0.2.2 — Native Proxmox LXC one-liner
+
+New native, **unprivileged Debian 13 LXC** installer for Proxmox VE, matching Media Vision's established Whiptail menus (Default Install, Advanced Install, User Defaults, Settings), storage/bridge selectors, network and timezone configuration, and optional root-SSH password setup (disabled by default). Defaults: **2 vCPU, 2 GiB RAM, 16 GiB disk, 512 MiB swap**, DHCP and Australia/Brisbane. A single stable release script runs on the **Proxmox host**, never inside an existing container:
+
+    bash -c "$(curl -fsSL https://github.com/zemerdon/filter-vision/releases/latest/download/install-proxmox.sh)"
+
+No Docker, no development channel. Provisioning refuses existing cluster CT/VM IDs, checks Proxmox storages/bridge and Debian 13 template, pins the latest stable application release, validates its SHA256 archive before creating the CT, and preserves a newly created CT for diagnostics if installation fails. The installer does not connect mail accounts, enable rules or activate permanent deletion. An existing Debian 13 LXC can continue using install.sh from the same stable release. Advanced CLI and --dry-run support unattended operators. Only enable this passwordless HTTPS interface on trusted internal networks.

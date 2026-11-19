@@ -16,7 +16,9 @@ def build() -> tuple[Path, Path]:
     digest = DIST / f"filter-vision-{TAG}.sha256"
     inputs = [REPO / "pyproject.toml", REPO / "packaging" / "update-stable.sh",
               REPO / "packaging" / "install-cleaner.sh",
-              REPO / "packaging" / "install-controls.sh"]
+              REPO / "packaging" / "install-controls.sh",
+              REPO / "packaging" / "install-proxmox.sh",
+              REPO / "packaging" / "proxmox-ui.sh"]
     inputs += sorted(path for path in (REPO / "src").rglob("*")
                      if path.is_file() and "__pycache__" not in path.parts and
                      path.suffix in {".py", ".html", ".css"})
@@ -41,6 +43,24 @@ def build() -> tuple[Path, Path]:
                     tf.addfile(info, io.BytesIO(content))
     sha = hashlib.sha256(artifact.read_bytes()).hexdigest()
     digest.write_text(f"{sha}  {artifact.name}\n", encoding="ascii")
+    # Self-contained Proxmox installer: visual Media Vision-style Whiptail
+    # frontend followed by the safeguarded native LXC backend.
+    ui = (REPO / "packaging" / "proxmox-ui.sh").read_text(encoding="utf-8")
+    backend = (REPO / "packaging" / "install-proxmox.sh").read_text(encoding="utf-8")
+    marker = "exec python3 - " + chr(34) + "$@" + chr(34) + " <<'PY'\n"
+    if backend.count(marker) != 1 or not ui.strip():
+        raise SystemExit("Broken Proxmox installer sources")
+    # Do not exec away the parent shell: its EXIT trap securely cleans any
+    # optional root-SSH password file created by the Whiptail frontend.
+    combined = backend.replace(marker, ui.rstrip() + "\n" + marker.replace(
+        "exec python3", "python3"), 1)
+    host_script = DIST / "install-proxmox.sh"
+    host_script.write_text(combined, encoding="utf-8")
+    host_script.chmod(0o755)
+    host_sha = hashlib.sha256(host_script.read_bytes()).hexdigest()
+    host_manifest = DIST / "install-proxmox.sh.sha256"
+    host_manifest.write_text(f"{host_sha}  install-proxmox.sh\n", encoding="ascii")
+    print(f"Proxmox one-liner asset: {len(combined.encode())} bytes, sha256 {host_sha}")
     print(f"Release {TAG}: {len(inputs)} source files, {artifact.stat().st_size} bytes")
     print(f"SHA256 {sha}")
     return artifact, digest
