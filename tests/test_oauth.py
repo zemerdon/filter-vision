@@ -108,3 +108,40 @@ def test_fail_safe_on_unsupported_oauth_client(tmp_path, monkeypatch):
     monkeypatch.setenv("FV_OAUTH_CLIENTS_PATH", str(config))
     with pytest.raises(OAuthError):
         oauth.client_settings("sample@hotmail.com")
+
+
+@pytest.mark.parametrize(
+    ("verification_uri", "expected_success"),
+    [
+        ("https://login.microsoft.com/devicelogin", True),
+        ("https://www.microsoft.com/devicelogin", True),
+        ("https://microsoft.com/devicelogin", True),
+        ("http://login.microsoft.com/devicelogin", False),
+        ("https://login.microsoft.com.attacker.invalid/devicelogin", False),
+        ("https://evil.example.invalid/devicelogin", False),
+    ],
+)
+def test_real_microsoft_device_verification_hostname(verification_uri, expected_success,
+                                                      monkeypatch):
+    """The live Microsoft response uses login.microsoft.com, not microsoftonline.com."""
+    monkeypatch.setattr(oauth, "client_settings", lambda _: {
+        "client_id": "12345678-1234-1234-1234-123456789000",
+        "scope": "https://outlook.office.com/IMAP.AccessAsUser.All offline_access",
+        "device_url": "https://login.microsoftonline.com/common/oauth2/v2.0/devicecode",
+        "token_url": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+    })
+    monkeypatch.setattr(oauth, "_json_post", lambda *args, **kwargs: {
+        "device_code": "D" * 1045,
+        "user_code": "A1B2-C3D4",
+        "verification_uri": verification_uri,
+        "expires_in": 900,
+        "interval": 5,
+    })
+    if expected_success:
+        flow = oauth.start_device_auth("sample@hotmail.com")
+        assert flow["verification_uri"] == verification_uri
+        assert flow["user_code"] == "A1B2-C3D4"
+        assert len(flow["device_code"]) == 1045
+    else:
+        with pytest.raises(OAuthError, match="Unexpected Microsoft"):
+            oauth.start_device_auth("sample@hotmail.com")

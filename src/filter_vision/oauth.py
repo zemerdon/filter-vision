@@ -165,8 +165,11 @@ def start_device_auth(email: str) -> dict:
     if (not isinstance(code, str) or not 20 <= len(code) <= 4096
             or not isinstance(user_code, str) or not 4 <= len(user_code) <= 40
             or not isinstance(verify_uri, str)
-            or urllib.parse.urlsplit(verify_uri).hostname not in
-                ("microsoft.com", "www.microsoft.com", "login.microsoftonline.com")
+            or urllib.parse.urlsplit(verify_uri).scheme != "https"
+            or urllib.parse.urlsplit(verify_uri).hostname not in (
+                "microsoft.com", "www.microsoft.com", "login.microsoft.com",
+                "login.microsoftonline.com",
+            )
             or not 60 <= ttl <= 1800):
         raise OAuthError("Unexpected Microsoft device authorization response")
     return {
