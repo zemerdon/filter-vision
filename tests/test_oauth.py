@@ -356,4 +356,98 @@ def test_browser_auth_webui_flow_and_one_time_consumption(signed_in, app, tmp_pa
         "csrf": csrf, "callback_url": callback,
     })
     assert replay.status_code == 200
-    assert "Start a fresh browser sign-in first" in replay.text
+    assert "No active browser authorization was found" in replay.text
+    assert 'id="browser-result"' in replay.text
+    assert "Connection not completed" in replay.text
+
+
+@pytest.mark.parametrize(
+    ("oauth_error", "stage", "public_detail"),
+    [
+        ("Callback address does not match the registered Microsoft redirect",
+         "callback", "Callback address does not match"),
+        ("Authorization state mismatch: do not reuse this callback",
+         "callback", "Authorization state mismatch"),
+        ("Microsoft denied browser authorization: invalid_request",
+         "microsoft_error", "invalid_request"),
+        ("Microsoft could not redeem the browser authorization: invalid_grant",
+         "token_exchange", "invalid_grant"),
+    ],
+)
+def test_failed_browser_callback_visible_inline_and_safe(
+    signed_in, app, monkeypatch, oauth_error, stage, public_detail
+):
+    import importlib
+    webui = importlib.import_module("filter_vision.app")
+    client, csrf = signed_in
+    with app.state.store.db() as con:
+        con.execute("INSERT INTO accounts(label,provider,host,port,username,folder,"
+                    "interval_minutes,enabled,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    ("Imported", "outlook", "outlook.office365.com", 993,
+                     "sample@hotmail.com", "Junk", 30, 0, 1))
+    secret_url = "https://localhost?code=" + "SECRETCODE" * 12 + "&state=" + "STATE" * 12
+    app.state.oauth_code_flows[1] = {
+        "owner_csrf": csrf, "expires_at": 2999999999,
+        "state": "STATE" * 12, "verifier": "PRIVATEVERIFIER" * 6,
+        "redirect_uri": "https://localhost",
+    }
+    monkeypatch.setattr(webui, "redeem_browser_auth",
+                        lambda flow, url: (_ for _ in ()).throw(OAuthError(oauth_error)))
+    result = client.post("/accounts/1/oauth/browser/finish", data={
+        "csrf": csrf, "callback_url": secret_url,
+    }, follow_redirects=False)
+    assert result.status_code == 303
+    assert result.headers["location"] == "/accounts/1/oauth#browser-result"
+    response = client.get("/accounts/1/oauth")
+    assert response.status_code == 200
+    assert 'id="browser-result"' in response.text
+    assert 'role="alert"' in response.text
+    assert public_detail in response.text
+    assert "Connection not completed" in response.text
+    assert "Start Microsoft Browser Sign-In" in response.text
+    assert "SECRETCODE" not in response.text
+    assert "PRIVATEVERIFIER" not in response.text
+    assert "STATE" * 12 not in response.text
+    assert "No account was enabled" in response.text
+    # One-time notice is not replayed on future page visits.
+    assert "Connection not completed" not in client.get("/accounts/1/oauth").text
+    with app.state.store.db() as db:
+        audit = db.execute("SELECT detail FROM audit_events WHERE event='microsoft_browser_auth_failed'").fetchone()
+        assert audit["detail"] == "stage=" + stage
+        assert "SECRET" not in audit["detail"]
+
+
+def test_browser_callback_error_after_imap_validation(signed_in, app, monkeypatch):
+    import importlib
+    webui = importlib.import_module("filter_vision.app")
+    client, csrf = signed_in
+    with app.state.store.db() as db:
+        db.execute("INSERT INTO accounts(label,provider,host,port,username,folder,"
+                   "interval_minutes,enabled,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                   ("Imported", "outlook", "outlook.office365.com", 993,
+                    "sample@hotmail.com", "Junk", 30, 0, 1))
+    app.state.oauth_code_flows[1] = {
+        "owner_csrf": csrf, "expires_at": 2999999999,
+        "state": "S" * 50, "verifier": "V" * 65,
+        "redirect_uri": "https://localhost",
+    }
+    monkeypatch.setattr(webui, "redeem_browser_auth",
+                        lambda flow, callback_url: {
+                            "access_token": "A" * 120,
+                            "refresh_token": "R" * 120, "expires_in": 3600,
+                        })
+    monkeypatch.setattr(webui, "verify_imap_auth",
+                        lambda email, token: (_ for _ in ()).throw(
+                            OAuthError("Microsoft IMAP authentication failed for this account")))
+    r=client.post("/accounts/1/oauth/browser/finish",data={
+        "csrf":csrf,"callback_url":"https://localhost?code="+"C"*120+"&state="+"S"*50
+    },follow_redirects=False)
+    assert r.status_code==303
+    assert r.headers["location"].endswith("#browser-result")
+    page=client.get("/accounts/1/oauth").text
+    assert "Outlook IMAP rejected" in page
+    assert "No account was connected" in page
+    assert not app.state.token_vault.connected(1)
+    with app.state.store.db() as db:
+        event=db.execute("SELECT detail FROM audit_events WHERE event='microsoft_browser_auth_failed'").fetchone()
+        assert event["detail"]=="stage=imap_validation"

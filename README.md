@@ -2,7 +2,7 @@
 
 A self-hosted, native Debian 13 email-analysis and filtering administration UI.
 
-**v0.1.8 stable foundation:** passwordless WebUI restricted to trusted source networks, signed HTTPS browser cookies/CSRF, offline EML header analysis, imported account/rule drafts, Microsoft device-code OAuth2 reauthorization with encrypted tokens, read-only Junk rule previews, and the verified GitHub stable updater.
+**v0.1.9 stable foundation:** passwordless WebUI restricted to trusted source networks, signed HTTPS browser cookies/CSRF, offline EML header analysis, imported account/rule drafts, Microsoft device-code OAuth2 reauthorization with encrypted tokens, read-only Junk rule previews, and the verified GitHub stable updater.
 
 **Important:** Microsoft account authorization and read-only IMAP previews are available, but **scheduled scanning and deletion are not enabled**. Existing mail cleaners must remain running until the new account authorization, rule parity, backup/restore and safe cutover are verified.
 
@@ -33,3 +33,7 @@ Use the official Microsoft device-login URL displayed alongside the device user 
 ## v0.1.8 Microsoft browser sign-in fallback
 
 Added an alternative Microsoft authorization-code flow using the existing, explicitly configured localhost redirect and PKCE (S256). After signing in, users can privately paste the redirected callback URL back into Filter Vision over HTTPS for state verification and single-use token redemption. The browser code is not stored in logs, Git, or account rows. The original device-code flow remains available; both ways still require successful read-only IMAP authentication before encrypted credentials are saved. No cleaner scheduler or mailbox delete action is activated.
+
+## v0.1.9 Browser authorization feedback
+
+After a pasted OAuth callback fails, Filter Vision redirects directly to a visible, accessible result beside the browser sign-in form, with clear next steps. It does not silently discard attempts or rely on the user finding an error at the top of a long mobile page. Safe, categorical audit events record the stage (callback, Microsoft response, token exchange, IMAP validation, token storage) without recording codes or callback URLs. Successful connections are still marked only after Microsoft token redemption, read-only IMAP validation and encrypted credential storage. No automatic scanning or deletion is enabled.

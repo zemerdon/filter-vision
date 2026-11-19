@@ -89,6 +89,8 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
     app.state.latest = {}
     app.state.oauth_flows = {}
     app.state.oauth_code_flows = {}
+    # One-use, browser-bound status only. Never store callback URLs or codes.
+    app.state.oauth_feedback = {}
     app.state.previews = {}
     app.state.oauth_lock = threading.RLock()
     app.state.token_vault = TokenVault(store.directory)
@@ -238,9 +240,13 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Microsoft account not found")
         return dict(account)
 
-    def oauth_page(request: Request, account: dict, error=None, notice=None):
+    def oauth_page(request: Request, account: dict, error=None, notice=None,
+                   browser_error=None):
         sess = session(request)
         with app.state.oauth_lock:
+            flash = app.state.oauth_feedback.pop((account["id"], sess["csrf"]), None)
+            if flash:
+                browser_error = flash["message"]
             pending = app.state.oauth_flows.get(account["id"])
             if pending and pending["expires_at"] <= int(time.time()):
                 app.state.oauth_flows.pop(account["id"], None)
@@ -263,7 +269,7 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
             } if browser_flow and browser_flow["owner_csrf"] == sess["csrf"] else None
         return render(request, "oauth.html", active="accounts", sess=sess,
                       account=account, flow=safe_flow, browser_flow=safe_browser,
-                      error=error, notice=notice,
+                      error=error, notice=notice, browser_error=browser_error,
                       connected=app.state.token_vault.connected(account["id"]))
 
     @app.get("/accounts/{account_id}/oauth", response_class=HTMLResponse)
@@ -348,21 +354,68 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
         if not valid_csrf(sess, csrf):
             return invalid_csrf()
         account = oauth_account(account_id)
+
+        def failed(stage: str, message: str):
+            # The callback URL contains a one-time secret: NEVER log it, store it,
+            # return it to the browser, or include a source exception in an audit.
+            # Restrict the stage and message to predefined, safe status categories.
+            known = {
+                "missing_flow", "callback", "microsoft_error",
+                "token_exchange", "imap_validation", "token_storage",
+            }
+            assert stage in known
+            message = str(message)[:400]
+            with app.state.oauth_lock:
+                app.state.oauth_feedback[(account_id, sess["csrf"])] = {
+                    "message": message,
+                }
+            store.audit("microsoft_browser_auth_failed", "stage=" + stage)
+            # A redirect with an anchor scrolls to the result beside the form,
+            # especially on phones. It also prevents accidental POST replay.
+            return RedirectResponse(
+                f"/accounts/{account_id}/oauth#browser-result", status_code=303
+            )
+
         with app.state.oauth_lock:
             flow = app.state.oauth_code_flows.pop(account_id, None)
         if not flow or flow["owner_csrf"] != sess["csrf"]:
-            return oauth_page(request, account, error="Start a fresh browser sign-in first")
+            return failed("missing_flow",
+                          "No active browser authorization was found for this tab. "
+                          "Start Microsoft Browser Sign-In again and complete it in the same browser.")
         tokens = None
         try:
-            tokens = redeem_browser_auth(flow, callback_url)
-            verify_imap_auth(account["username"], tokens["access_token"])
-            app.state.token_vault.save(account_id, tokens)
-        except OAuthError as error:
-            return oauth_page(request, account, error=str(error))
+            try:
+                tokens = redeem_browser_auth(flow, callback_url)
+            except OAuthError as error:
+                reason = str(error)
+                if reason.startswith("Microsoft denied browser authorization"):
+                    return failed("microsoft_error", reason +
+                                  ". Start a fresh browser sign-in after resolving Microsoft's error.")
+                if (reason.startswith("Microsoft could not redeem")
+                        or reason.startswith("Microsoft authorization service")):
+                    return failed("token_exchange", reason +
+                                  ". The one-time code has been consumed or may have expired; "
+                                  "start a fresh sign-in.")
+                return failed("callback", reason +
+                              ". No account was connected; start a fresh browser sign-in and paste "
+                              "the complete final localhost URL with code and state.")
+            try:
+                verify_imap_auth(account["username"], tokens["access_token"])
+            except OAuthError:
+                return failed("imap_validation",
+                              "Microsoft issued authorization, but Outlook IMAP rejected the login "
+                              "or could not be reached. No account was connected. "
+                              "Please start a fresh sign-in; IMAP diagnostics may be needed.")
+            try:
+                app.state.token_vault.save(account_id, tokens)
+            except (OSError, OAuthError, ValueError):
+                return failed("token_storage",
+                              "Microsoft authorization and IMAP validation succeeded, but "
+                              "the encrypted credentials could not be saved. No account was connected.")
         finally:
             if tokens is not None:
                 tokens.clear()
-            # Discard verifier and OAuth state after exactly one callback attempt.
+            # Never retain a one-use state, verifier or authorization URL after POST.
             flow.clear()
         store.audit("microsoft_oauth_connected",
                     "Browser authorization + read-only IMAP authentication verified")

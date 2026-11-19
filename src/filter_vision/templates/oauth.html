@@ -8,8 +8,15 @@
 <div class="info">Filter Vision will ask Microsoft to authorize this account. It will verify IMAP authentication without reading, moving or deleting messages. The old cleaner remains active until a separately verified cutover.</div>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
 {% if notice %}<p class="info">{{ notice }}</p>{% endif %}
-<div class="panel">
+<div class="panel" id="browser-result" tabindex="-1">
 <h2>Browser sign-in (legacy-compatible)</h2>
+{% if browser_error %}
+<div class="error" role="alert" aria-live="assertive">
+<strong>Connection not completed</strong>
+<p>{{ browser_error }}</p>
+<p class="small">No account was enabled or mailbox changed. You can start a new sign-in below.</p>
+</div>
+{% endif %}
 <p class="muted">Recommended for your imported accounts because the original cleaner uses this authorization method. It includes an explicit authorization-code request and PKCE protection, and takes no action on your mail.</p>
 {% if browser_flow %}
 <p><a href="{{ browser_flow.authorization_url }}" target="_blank" rel="noopener noreferrer" class="btn primary">Open Microsoft Browser Sign-In</a></p>
@@ -19,6 +26,7 @@
 <label for="ms_callback">Microsoft callback URL (kept private)</label>
 <textarea id="ms_callback" name="callback_url" rows="3" required autocomplete="off" spellcheck="false" placeholder="Paste the complete localhost callback URL"></textarea>
 <button type="submit" class="btn primary">Finish Browser Authorization</button>
+<p class="muted small">After submitting, Filter Vision will show a connection confirmation or an error in this section. Do not navigate away before reading the result.</p>
 </form>
 {% else %}
 <form method="post" action="/accounts/{{ account.id }}/oauth/browser/start">
