@@ -33,6 +33,7 @@ from .oauth import (TokenVault, OAuthError, start_device_auth, poll_device_auth,
                     verify_imap_auth, access_token_for,
                     start_browser_auth, redeem_browser_auth)
 from .preview import scan_junk_preview, PreviewError
+from .live import load_policy, LiveSafetyError
 
 # Restrict passwordless administration to explicitly trusted local networks.
 # The installer adds the instance network to the trusted list at deployment.
@@ -192,8 +193,16 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
         with store.db() as con:
             account_count = con.execute("SELECT COUNT(*) FROM accounts").fetchone()[0]
             rule_count = con.execute("SELECT COUNT(*) FROM rules").fetchone()[0]
+        live_count = len(live_account_ids())
         return render(request, "dashboard.html", active="dashboard", sess=sess,
-                      account_count=account_count, rule_count=rule_count)
+                      account_count=account_count, rule_count=rule_count,
+                      live_count=live_count)
+
+    def live_account_ids():
+        try:
+            return set(load_policy()["accounts"])
+        except (LiveSafetyError, OSError, ValueError, KeyError):
+            return set()
 
     @app.get("/accounts", response_class=HTMLResponse)
     def accounts(request: Request):
@@ -202,10 +211,13 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
             return denial
         with store.db() as con:
             accounts = [dict(x) for x in con.execute("SELECT * FROM accounts ORDER BY id DESC")]
+        live_ids = live_account_ids()
         for account in accounts:
             account["oauth_connected"] = app.state.token_vault.connected(account["id"])
             account["preview"] = app.state.previews.get(account["id"])
-        return render(request, "accounts.html", active="accounts", sess=sess, accounts=accounts)
+            account["live_active"] = account["id"] in live_ids
+        return render(request, "accounts.html", active="accounts", sess=sess,
+                      accounts=accounts, live_count=len(live_ids))
 
     @app.post("/accounts", response_class=HTMLResponse)
     def account_add(request: Request, csrf: str = Form(""), label: str = Form(""),

@@ -253,4 +253,4 @@ openssl x509 -in "$CFG/tls.crt" -noout -fingerprint -sha256
 if [[ -f "$DATA/setup-token" ]]; then
   echo "Initial admin setup token: $DATA/setup-token (root-read-only)"
 fi
-echo "No IMAP connections, scans or deletions available in this release."
+echo "Automatic Junk cleaning remains separately gated by a root-managed cutover policy."

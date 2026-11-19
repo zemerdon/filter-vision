@@ -20,7 +20,7 @@ def test_disabled_account_draft(signed_in, app):
 
 def test_stable_updates_queues_fixed_action(signed_in, app, monkeypatch):
     client, csrf = signed_in
-    payload = {"tag_name": "v0.2.0", "html_url":
+    payload = {"tag_name": "v0.2.1", "html_url":
                "https://github.com/zemerdon/filter-vision/releases/tag/v0.2.0",
                "target_commitish": "stable", "prerelease": False, "draft": False}
     def fake_open(*args, **kwargs):
@@ -29,8 +29,8 @@ def test_stable_updates_queues_fixed_action(signed_in, app, monkeypatch):
     assert client.post("/updates/check", data={"csrf": csrf},
                        follow_redirects=False).status_code == 303
     page = client.get("/updates").text
-    assert "v0.2.0" in page
-    assert "Apply v0.2.0 stable update" in page
+    assert "v0.2.1" in page
+    assert "Apply v0.2.1 stable update" in page
     assert "no develop update channel" in page.lower()
     assert client.post("/updates/apply", data={"csrf": csrf+"x"}).status_code == 403
     assert client.post("/updates/apply", data={"csrf": csrf},
@@ -54,7 +54,7 @@ def test_stable_updates_invalid_api_payload(signed_in, monkeypatch):
 
 def test_stable_updates_rejects_wrong_branch(signed_in, monkeypatch):
     client, csrf = signed_in
-    payload = {"tag_name": "v0.2.0", "html_url":
+    payload = {"tag_name": "v0.2.1", "html_url":
                "https://github.com/zemerdon/filter-vision/releases/tag/v0.2.0",
                "target_commitish": "main", "prerelease": False, "draft": False}
     monkeypatch.setattr("urllib.request.urlopen",
@@ -67,7 +67,7 @@ def test_stable_updates_rejects_wrong_branch(signed_in, monkeypatch):
 
 def test_stable_updates_rejects_prerelease(signed_in, monkeypatch):
     client, csrf = signed_in
-    payload = {"tag_name": "v0.2.0", "html_url":
+    payload = {"tag_name": "v0.2.1", "html_url":
                "https://github.com/zemerdon/filter-vision/releases/tag/v0.2.0",
                "target_commitish": "stable", "prerelease": True, "draft": False}
     monkeypatch.setattr("urllib.request.urlopen",

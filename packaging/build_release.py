@@ -14,7 +14,8 @@ def build() -> tuple[Path, Path]:
     DIST.mkdir(exist_ok=True)
     artifact = DIST / f"filter-vision-{TAG}.tar.gz"
     digest = DIST / f"filter-vision-{TAG}.sha256"
-    inputs = [REPO / "pyproject.toml", REPO / "packaging" / "update-stable.sh"]
+    inputs = [REPO / "pyproject.toml", REPO / "packaging" / "update-stable.sh",
+              REPO / "packaging" / "install-cleaner.sh"]
     inputs += sorted(path for path in (REPO / "src").rglob("*")
                      if path.is_file() and "__pycache__" not in path.parts and
                      path.suffix in {".py", ".html", ".css"})

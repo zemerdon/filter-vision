@@ -2,7 +2,7 @@
 
 A self-hosted, native Debian 13 email-analysis and filtering administration UI.
 
-**v0.1.9 stable foundation:** passwordless WebUI restricted to trusted source networks, signed HTTPS browser cookies/CSRF, offline EML header analysis, imported account/rule drafts, Microsoft device-code OAuth2 reauthorization with encrypted tokens, read-only Junk rule previews, and the verified GitHub stable updater.
+**v0.2.0 stable foundation:** passwordless WebUI restricted to trusted source networks, signed HTTPS browser cookies/CSRF, offline EML header analysis, imported account/rule drafts, Microsoft device-code OAuth2 reauthorization with encrypted tokens, read-only Junk rule previews, and the verified GitHub stable updater.
 
 **Important:** Microsoft account authorization and read-only IMAP previews are available, but **scheduled scanning and deletion are not enabled**. Existing mail cleaners must remain running until the new account authorization, rule parity, backup/restore and safe cutover are verified.
 
@@ -37,3 +37,7 @@ Added an alternative Microsoft authorization-code flow using the existing, expli
 ## v0.1.9 Browser authorization feedback
 
 After a pasted OAuth callback fails, Filter Vision redirects directly to a visible, accessible result beside the browser sign-in form, with clear next steps. It does not silently discard attempts or rely on the user finding an error at the top of a long mobile page. Safe, categorical audit events record the stage (callback, Microsoft response, token exchange, IMAP validation, token storage) without recording codes or callback URLs. Successful connections are still marked only after Microsoft token redemption, read-only IMAP validation and encrypted credential storage. No automatic scanning or deletion is enabled.
+
+## v0.2.0 Legacy-compatible cleaner and recovery
+
+Includes conservative, account-scoped, exact legacy raw-header matching with UIDPLUS-only targeted UID EXPUNGE (never blanket EXPUNGE), root-owned explicit cutover approval, per-mailbox locking and systemd 30-minute scheduling. The cleaner units are installed disabled, requiring verified legacy shutdown and a separate root-owned policy before any live mutation. Also includes full encrypted database/configuration/OAuth vault backup, integrity verification and restore into isolated staging directories. Live permanent deletions cannot be reversed. Both accounts must be authorized and the owner must explicitly approve cutover; no installation alone activates deletion.
