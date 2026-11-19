@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<div class="heading"><div><p class="eyebrow">OVERVIEW</p><h1>Dashboard</h1><p class="muted">Your self-hosted email filtering control centre.</p></div><span class="pill warning">FOUNDATION RELEASE</span></div>
+<div class="stats">
+<div class="panel stat"><span>CONFIGURED ACCOUNTS</span><strong>{{ account_count }}</strong><small>Drafts only</small></div>
+<div class="panel stat"><span>FILTER RULES</span><strong>{{ rule_count }}</strong><small>Inactive drafts</small></div>
+<div class="panel stat"><span>MAIL PROCESSED</span><strong>—</strong><small>Worker not yet implemented</small></div>
+<div class="panel stat"><span>SERVICE</span><strong class="smaller">ONLINE</strong><small>WebUI only</small></div>
+</div>
+<div class="panel highlight">
+<h2>Ready for offline spam analysis</h2>
+<p>Upload one or several <code>.eml</code> samples. Filter Vision will identify candidate sender, domain and campaign fingerprints. Save suggestions as <strong>disabled draft rules</strong> for review.</p>
+<a class="btn primary" href="/analyze">Analyze email samples</a>
+</div>
+<div class="columns">
+<div class="panel"><h2>Mail connections</h2><p class="muted">Microsoft OAuth2 and IMAP scanning are still under development. Accounts saved here are disabled configuration drafts, and cannot connect or delete anything.</p><a href="/accounts">View accounts</a></div>
+<div class="panel"><h2>Stable updates</h2><p class="muted">Only GitHub stable releases are supported. Use the Updates page to check the latest published version; automatic application and rollback are not enabled yet.</p><a href="/updates">Open Updates</a></div>
+</div>
+{% endblock %}

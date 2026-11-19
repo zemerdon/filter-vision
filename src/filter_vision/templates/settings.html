@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<div class="heading"><div><p class="eyebrow">INSTANCE CONFIGURATION</p><h1>Settings</h1><p class="muted">Runtime configuration and security status.</p></div></div>
+<div class="panel"><h2>Security</h2><p class="muted">Admin sign-in and CSRF protection are active. Browser access on an untrusted network requires properly configured HTTPS and secure cookies through a trusted reverse proxy.</p></div>
+<div class="panel"><h2>Capabilities</h2><div class="table-wrap"><table><tbody>
+<tr><td>Offline .eml header analysis</td><td>Available</td></tr>
+<tr><td>Draft account configuration</td><td>Available</td></tr>
+<tr><td>Draft rule storage</td><td>Available</td></tr>
+<tr><td>Microsoft OAuth2 connections</td><td>Not yet available</td></tr>
+<tr><td>IMAP scan / delete</td><td>Disabled by design</td></tr>
+<tr><td>Automatic stable update installation</td><td>Not yet available</td></tr>
+</tbody></table></div></div>
+{% endblock %}

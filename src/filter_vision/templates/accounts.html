@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Accounts{% endblock %}
+{% block content %}
+<div class="heading"><div><p class="eyebrow">MAIL CONNECTIONS</p><h1>Accounts</h1><p class="muted">Multiple independent IMAP accounts — configuration only in this release.</p></div><span class="pill">CONNECTIONS DISABLED</span></div>
+<div class="info">Account settings can be saved as drafts. OAuth2, connection testing, scanning and mailbox deletion are <strong>not implemented or enabled</strong> in v{{ version }}.</div>
+<div class="panel"><h2>Account drafts</h2>
+{% if accounts %}
+<div class="table-wrap"><table><thead><tr><th>Label</th><th>Provider</th><th>IMAP host</th><th>Folder</th><th>Interval</th><th>Status</th></tr></thead>
+<tbody>{% for a in accounts %}<tr><td>{{ a.label }}</td><td>{{ a.provider }}</td><td>{{ a.host }}:{{ a.port }}</td><td>{{ a.folder }}</td><td>{{ a.interval_minutes }} min</td><td><span class="pill">Not connected</span></td></tr>{% endfor %}</tbody></table></div>
+{% else %}<p class="empty">No account drafts configured yet.</p>{% endif %}
+</div>
+<div class="panel"><h2>Add account draft</h2>
+<form method="post" action="/accounts" class="form-grid">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label>Account label<input name="label" maxlength="80" placeholder="My Hotmail" required></label>
+<label>Provider<select name="provider"><option value="outlook">Microsoft Outlook / Hotmail</option><option value="gmail">Gmail (future)</option><option value="custom">Generic IMAP (future)</option></select></label>
+<label>IMAP hostname<input name="host" placeholder="outlook.office365.com" required></label>
+<label>Port<input type="number" name="port" min="1" max="65535" value="993" required></label>
+<label>Username / email<input name="username" maxlength="254" placeholder="you@example.com" required></label>
+<label>Folder<input name="folder" value="Junk" maxlength="120" required></label>
+<label>Scan interval (minutes)<input name="interval" type="number" min="1" max="1440" value="30" required></label>
+<div class="form-end"><button class="btn primary" type="submit">Save disabled draft</button></div>
+</form>
+</div>
+{% endblock %}

@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Updates{% endblock %}
+{% block content %}
+<div class="heading"><div><p class="eyebrow">RELEASE MANAGEMENT</p><h1>Updates</h1><p class="muted">GitHub stable releases only. There is no develop update channel.</p></div><span class="pill">STABLE</span></div>
+<div class="stats two">
+<div class="panel stat"><span>INSTALLED VERSION</span><strong>v{{ version }}</strong><small>Currently running WebUI</small></div>
+<div class="panel stat"><span>LATEST GITHUB STABLE</span><strong>{% if latest.tag %}{{ latest.tag }}{% else %}Not checked{% endif %}</strong><small>{% if latest.is_newer %}Newer stable version found{% elif latest.tag %}No newer version reported{% else %}Check below to query GitHub{% endif %}</small></div>
+</div>
+<div class="panel"><h2>Stable release check</h2>
+<p class="muted">Checks <code>zemerdon/filter-vision</code> for its latest published non-prerelease release. Does not change files or restart services.</p>
+<form method="post" action="/updates/check"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn primary" type="submit">Check for updates</button></form>
+{% if latest.error %}<p class="error">{{ latest.error }}</p>{% endif %}
+{% if latest.tag and latest.url %}<p><a href="{{ latest.url }}" target="_blank" rel="noreferrer noopener">View {{ latest.tag }} release notes on GitHub</a></p>{% endif %}
+</div>
+<div class="panel"><h2>Apply stable update</h2>
+<p class="muted">Automatic installation, backup/rollback and restart verification are not available in v{{ version }}. This button stays disabled until the privileged update mechanism has been implemented and tested on fv-dev.</p>
+<button type="button" class="btn" disabled aria-disabled="true">Apply update — unavailable</button>
+</div>
+{% endblock %}

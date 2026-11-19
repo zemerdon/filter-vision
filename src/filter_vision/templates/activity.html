@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Activity{% endblock %}
+{% block content %}
+<div class="heading"><div><p class="eyebrow">AUDIT</p><h1>Activity</h1><p class="muted">Administration events, with private email message contents excluded.</p></div></div>
+<div class="panel"><h2>Recent events</h2>
+{% if events %}<div class="table-wrap"><table><thead><tr><th>Unix time</th><th>Event</th><th>Detail</th></tr></thead><tbody>
+{% for e in events %}<tr><td class="mono">{{ e.created_at }}</td><td>{{ e.event }}</td><td>{{ e.detail }}</td></tr>{% endfor %}
+</tbody></table></div>{% else %}<p class="empty">No activity recorded.</p>{% endif %}
+</div>
+{% endblock %}

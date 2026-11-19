@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Analyze email{% endblock %}
+{% block content %}
+<div class="heading"><div><p class="eyebrow">SPAM INTELLIGENCE</p><h1>Analyze Email</h1><p class="muted">Find useful header fingerprints without opening links or executing attachments.</p></div></div>
+<div class="panel"><h2>Upload .eml samples</h2><p class="muted">Choose 1–20 messages. Maximum 2 MiB per file, 10 MiB total. Uploaded message bodies are never saved.</p>
+<form method="post" action="/analyze" enctype="multipart/form-data" class="upload-form">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="file" name="files" accept=".eml,message/rfc822" multiple required>
+<button class="btn primary" type="submit">Analyze selected files</button>
+</form>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+</div>
+{% if samples %}
+<div class="panel"><h2>Messages analysed <span class="pill">{{ samples|length }}</span></h2>
+<div class="table-wrap"><table><thead><tr><th>File</th><th>Sender</th><th>Subject</th></tr></thead><tbody>
+{% for s in samples %}<tr><td>{{ s.filename }}</td><td>{{ s.sender or 'Unknown' }}</td><td>{{ s.subject or 'No subject' }}</td></tr>{% endfor %}
+</tbody></table></div></div>
+<div class="panel"><h2>Suggested rules <span class="pill">{{ suggestions|length }}</span></h2>
+<p class="muted">Coverage counts refer <strong>only to these uploaded samples</strong>, not your live inbox. A matching candidate is not proof that a rule is safe.</p>
+{% if suggestions %}<div class="table-wrap"><table><thead><tr><th>Method</th><th>Field / fingerprint</th><th>Coverage</th><th>Review</th><th>Action</th></tr></thead><tbody>
+{% for c in suggestions %}
+<tr><td>{{ c.kind.replace('_',' ')|title }}</td><td><span class="mono muted small">{{ c.field }}</span><br><span class="value-cell">{{ c.value }}</span></td><td>{{ c.count }}/{{ c.total }}</td><td><span class="pill">{{ c.risk }}</span></td>
+<td><form method="post" action="/rules">
+<input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="{{ c.kind }}"><input type="hidden" name="field" value="{{ c.field }}"><input type="hidden" name="value" value="{{ c.value }}">
+<button class="btn small-btn" type="submit">Save draft</button>
+</form></td>
+</tr>{% endfor %}
+</tbody></table></div>{% else %}<p class="empty">No suitable narrow candidate found.</p>{% endif %}
+</div>
+{% endif %}
+<div class="info">Rule suggestions are review-only; saving a draft never enables filtering or deletes email.</div>
+{% endblock %}
