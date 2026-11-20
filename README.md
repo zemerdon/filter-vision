@@ -81,7 +81,7 @@ The first certificate is self-signed; an initial browser warning is expected. Re
 | **Microsoft OAuth2** | Browser authorization-code + PKCE for Outlook/Hotmail; encrypted token vault |
 | **Junk preview** | Read-only IMAP inspection before live filtering |
 | **Email analyzer** | Analyze uploaded .eml samples and suggest narrow header fingerprints |
-| **Rule draft management** | Edit, duplicate and delete inactive unscoped drafts; imported root-approved rules remain protected |
+| **Rule management** | Edit or duplicate inactive drafts directly; propose edits/duplicates of protected rules; request Enable/Disable for review only (not a live toggle) |
 | **Legacy-compatible cleaner** | Exact-header matches for separately authorized Microsoft accounts |
 | **Targeted deletion** | Requires IMAP UIDPLUS; UID-specific STORE/EXPUNGE rather than blanket expunge |
 | **Schedule controls** | Status, last/next run, adjustable 5-minute to 24-hour interval |
@@ -97,8 +97,9 @@ The first certificate is self-signed; an initial browser warning is expected. Re
 Filter Vision does **not** treat a suspicious message as permission to delete it.
 
 - Uploaded message analysis suggests rules; it does not activate them.
-- Drafts can be edited, duplicated or deleted, but remain disabled until independently reviewed and approved.
-- The original 22 root-approved legacy rules remain immutable in the WebUI; changing or retiring them requires a separately reviewed root-policy workflow.
+- Ordinary disabled and unscoped drafts can be edited, duplicated or deleted without changing live filtering.
+- All rules have Edit, Duplicate and Enable/Disable request controls. Protected rule edits and duplicates are isolated proposals; enable/disable creates **pending review**, not a live change.
+- The original 22 root-approved signatures and account scopes remain unchanged until an independently reviewed, root-controlled approval workflow authorizes an exact transition.
 - Connecting Microsoft does not automatically start deletion.
 - Live filtering requires protected account-and-rule approval.
 - The worker checks the Junk folder, UID validity, message headers and UIDPLUS capabilities before deleting an approved match.
@@ -116,7 +117,7 @@ Filter Vision has seven main pages:
 | **Dashboard** | Account and rule totals, cleaner status and shortcuts |
 | **Accounts** | Microsoft connect/reauthorize, account drafts and read-only Junk preview |
 | **Analyze Email** | Read-only scan connected Microsoft Junk folders or upload .eml samples; select emails, manually test headers and wildcards, view matched/missed results and save only inactive supported drafts |
-| **Rules** | Review protected original signatures; edit, duplicate and delete ordinary disabled drafts |
+| **Rules** | Edit/duplicate drafts; prepare protected-rule replacements, request Enable/Disable for specified accounts, review/cancel pending requests (no automatic live activation) |
 | **Activity** | Scan and filtering statistics, per-rule effectiveness, readable server time and expandable text-only matched-message details |
 | **Updates** | Check/apply verified GitHub stable releases, read the in-app bullet changelog and see the actual running version |
 | **Settings** | Timer status, scan interval, Activity display length and cleaner Start/Stop/Restart with a clearly separated Run Now confirmation |

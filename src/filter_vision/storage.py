@@ -10,7 +10,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DDL = """
 CREATE TABLE IF NOT EXISTS admins (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -92,6 +92,28 @@ CREATE TABLE IF NOT EXISTS message_actions (
 CREATE INDEX IF NOT EXISTS idx_message_actions_date ON message_actions(created_at DESC);
 PRAGMA user_version = 3;
 """
+SCHEMA_V4 = """
+-- Review requests NEVER form part of the live matcher or root-owned policy.
+-- Original signatures, disabled draft flags and 44 approved scopes stay frozen.
+CREATE TABLE IF NOT EXISTS rule_review_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_rule_id INTEGER NOT NULL,
+    source_sha256 TEXT NOT NULL,
+    operation TEXT NOT NULL CHECK (operation IN ('enable','disable','edit','duplicate')),
+    label TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    field TEXT NOT NULL,
+    pattern TEXT NOT NULL,
+    account_ids TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'pending_review'
+        CHECK (status IN ('pending_review','cancelled')),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rule_review_requests_status
+    ON rule_review_requests(status,created_at DESC);
+PRAGMA user_version = 4;
+"""
 ACTIVITY_LIMITS = (25,50,100,250,500)
 
 
@@ -163,6 +185,9 @@ class Store:
                 ver = 2
             if ver == 2:
                 con.executescript(SCHEMA_V3)
+                ver = 3
+            if ver == 3:
+                con.executescript(SCHEMA_V4)
         os.chmod(self.db_path, 0o600)
 
     def audit(self, event: str, detail: str):

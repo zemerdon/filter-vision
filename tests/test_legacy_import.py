@@ -96,7 +96,7 @@ def test_schema_v1_migration_retains_rows(tmp_path):
     con.close()
     store = Store(path)
     with store.db() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
         assert db.execute("SELECT activity_limit FROM app_preferences").fetchone()[0] == 50
         assert db.execute("SELECT COUNT(*) FROM message_actions").fetchone()[0] == 0
         assert db.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1

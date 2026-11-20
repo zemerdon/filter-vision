@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 
 import pytest
 
@@ -158,56 +159,99 @@ def test_csrf_origin_and_host_enforced_for_all_rule_mutations(signed_in, app):
     assert get_rule(app.state.store) == original
 
 
-def test_root_approved_legacy_rules_never_edit_duplicate_delete(signed_in, app):
-    client,csrf=signed_in
-    store=app.state.store
+def test_root_approved_legacy_rules_stage_edit_duplicate_disable_without_mutation(signed_in, app):
+    client, csrf = signed_in
+    store = app.state.store
     with store.db() as con:
         con.execute(
             "INSERT INTO rules(id,label,kind,field,pattern,enabled,action,created_at) "
             "VALUES(?,?,'legacy_raw_header','raw',?,0,'draft',1)",
-            (7,"Protected signature","X-Safe-Pattern: Unique-1234"))
-    before=None
+            (7, "Protected signature", "X-Safe-Pattern: Unique-1234"))
+        con.execute(
+            "INSERT INTO accounts(label,provider,host,port,username,folder,interval_minutes,"
+            "enabled,created_at) VALUES('Mock','outlook','outlook.office365.com',993,"
+            "'safe@example.invalid','Junk',30,0,1)"
+        )
+        account_id = con.execute("SELECT id FROM accounts").fetchone()[0]
+        con.execute("INSERT INTO rule_scopes(rule_id,account_id) VALUES(?,?)",
+                    (7,account_id))
+        before = dict(con.execute("SELECT * FROM rules WHERE id=7").fetchone())
+    editor = client.get("/rules/7/edit")
+    assert editor.status_code == 200
+    assert "Save proposed change" in editor.text
+    assert "root-approved 22 signatures" in editor.text
+    created = client.post("/rules/7/edit", data={
+        "csrf": csrf, "definition": "legacy_raw_header:raw",
+        "value": "X-Different-Signature: Approved-Review-Only",
+        "label": "Proposed change"}, follow_redirects=False)
+    assert created.status_code == 303
+    duplicate = client.post("/rules/7/duplicate", data={"csrf":csrf},
+                            follow_redirects=False)
+    assert duplicate.status_code == 303
+    assert duplicate.headers["location"].startswith("/rule-reviews/")
+    proposal = client.get(duplicate.headers["location"])
+    assert proposal.status_code == 200
+    assert "Save proposed change" in proposal.text
+    disable = client.post("/rules/7/request", data={
+        "csrf": csrf, "operation": "disable",
+        "confirm": "request_review"}, follow_redirects=False)
+    assert disable.status_code == 303
     with store.db() as con:
-        before=dict(con.execute("SELECT * FROM rules WHERE id=7").fetchone())
-    assert client.get("/rules/7/edit").status_code==409
-    assert "Protected" in client.get("/rules").text
-    for action,payload in (
-        ("edit",{"definition":"sender_domain:From","value":"attacker.invalid",
-                 "label":"Edit root approval"}),
-        ("duplicate",{}),
-        ("delete",{"confirm":"delete"})):
-        response=client.post("/rules/7/"+action,data={"csrf":csrf,**payload})
-        assert response.status_code==409, (action,response.text)
-        with store.db() as con:
-            assert dict(con.execute("SELECT * FROM rules WHERE id=7").fetchone())==before
-    assert client.get("/rules/9999/edit").status_code==404
+        after = dict(con.execute("SELECT * FROM rules WHERE id=7").fetchone())
+        scopes = [tuple(x) for x in con.execute(
+            "SELECT rule_id,account_id FROM rule_scopes")]
+        changes = [dict(x) for x in con.execute(
+            "SELECT * FROM rule_review_requests ORDER BY id")]
+        original_events = [x[0] for x in con.execute(
+            "SELECT event FROM audit_events WHERE event LIKE 'rule_review_%'")]
+    assert before == after
+    assert scopes == [(7,account_id)]
+    assert [x["operation"] for x in changes] == ["edit","duplicate","disable"]
+    assert all(x["status"] == "pending_review" for x in changes)
+    assert all(x["source_rule_id"] == 7 for x in changes)
+    assert len(original_events) == 3
+    assert json.loads(changes[-1]["account_ids"]) == [account_id]
+    assert client.post("/rules/7/delete",
+                       data={"csrf":csrf,"confirm":"delete"}).status_code == 409
     assert client.post("/rules/9999/delete",
-                       data={"csrf":csrf,"confirm":"delete"}).status_code==404
+                       data={"csrf":csrf,"confirm":"delete"}).status_code == 404
 
 
-def test_scoped_or_suspicious_draft_fails_closed(signed_in, app):
-    client,csrf=signed_in
-    store=app.state.store
-    created_draft(client,csrf)
-    old=get_rule(store)
+def test_scoped_draft_edits_are_review_only(signed_in, app):
+    client, csrf = signed_in
+    store = app.state.store
+    created_draft(client, csrf)
+    original = get_rule(store)
     with store.db() as con:
         con.execute(
             "INSERT INTO accounts(label,provider,host,port,username,folder,interval_minutes,"
             "enabled,created_at) VALUES('Mock','outlook','outlook.office365.com',993,"
             "'safe@example.invalid','Junk',30,0,1)"
         )
-        account_id=con.execute("SELECT id FROM accounts").fetchone()[0]
+        account_id = con.execute("SELECT id FROM accounts").fetchone()[0]
         con.execute("INSERT INTO rule_scopes(rule_id,account_id) VALUES(?,?)",
-                    (old["id"],account_id))
-    for action,data in (
-        ("edit",EDIT),("duplicate",{}),("delete",{"confirm":"delete"})):
-        assert client.post(f'/rules/{old["id"]}/{action}',
-                           data={"csrf":csrf,**data}).status_code==409
+                    (original["id"], account_id))
+    assert client.get(f'/rules/{original["id"]}/edit').status_code == 200
+    edit = client.post(f'/rules/{original["id"]}/edit',
+                       data={"csrf":csrf, **EDIT}, follow_redirects=False)
+    assert edit.status_code == 303
+    duplicate = client.post(f'/rules/{original["id"]}/duplicate',
+                            data={"csrf":csrf}, follow_redirects=False)
+    assert duplicate.status_code == 303
+    assert duplicate.headers["location"].startswith("/rule-reviews/")
+    assert client.post(f'/rules/{original["id"]}/delete',
+                       data={"csrf":csrf,"confirm":"delete"}).status_code == 409
     with store.db() as con:
-        assert con.execute("SELECT 1 FROM rule_scopes WHERE rule_id=?",
-                           (old["id"],)).fetchone()
-        assert dict(con.execute("SELECT * FROM rules WHERE id=?",(old["id"],)).fetchone())==old
-    assert client.get(f'/rules/{old["id"]}/edit').status_code==409
+        scopes = con.execute(
+            "SELECT COUNT(*) FROM rule_scopes WHERE rule_id=?", (original["id"],)
+        ).fetchone()[0]
+        reviews = [dict(x) for x in con.execute(
+            "SELECT * FROM rule_review_requests ORDER BY id")]
+        current = dict(con.execute(
+            "SELECT * FROM rules WHERE id=?", (original["id"],)).fetchone())
+    assert scopes == 1
+    assert [r["operation"] for r in reviews] == ["edit", "duplicate"]
+    assert current == original
 
 
 def test_live_approval_source_stays_constant_after_draft_changes(signed_in, app):

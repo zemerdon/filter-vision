@@ -33,6 +33,10 @@ from .rule_management import (
     RULE_DEFINITIONS, DRAFT_KINDS, RuleManagementError, draft_guard,
     update_draft, duplicate_draft, delete_draft,
 )
+from .rule_reviews import (
+    LEGACY_CODE, source_snapshot, queue_review, load_review,
+    revise_review, cancel_review,
+)
 from .storage import Store, ACTIVITY_LIMITS
 from .history import report as history_report
 from .release_notes import changelog_items
@@ -666,35 +670,54 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
         with store.db() as con:
             rules = [dict(x) for x in con.execute("SELECT * FROM rules ORDER BY id DESC")]
             scope_ids = {r[0] for r in con.execute("SELECT DISTINCT rule_id FROM rule_scopes")}
+            accounts = [dict(x) for x in con.execute("SELECT id,label FROM accounts ORDER BY id")]
+            reviews = [dict(x) for x in con.execute(
+                "SELECT * FROM rule_review_requests "
+                "WHERE status='pending_review' ORDER BY id DESC LIMIT 100")]
         approved = live_account_ids()
         approved_ids = ({r["id"] for r in rules if r["kind"] == "legacy_raw_header"}
                         if approved else set())
+        editable_ids = {r["id"] for r in rules if
+                        r["kind"] != "legacy_raw_header"
+                        and r["enabled"] == 0 and r["action"] == "draft"
+                        and r["kind"] in DRAFT_KINDS
+                        and r["id"] not in scope_ids}
         return render(request, "rules.html", active="rules", sess=sess,
                       rules=rules, approved_ids=approved_ids,
-                      editable_ids={r["id"] for r in rules if
-                                    r["kind"] != "legacy_raw_header"
-                                    and r["enabled"] == 0 and r["action"] == "draft"
-                                    and r["kind"] in DRAFT_KINDS
-                                    and r["id"] not in scope_ids})
+                      editable_ids=editable_ids,
+                      accounts=accounts, review_requests=reviews)
 
     @app.get("/rules/{rule_id}/edit", response_class=HTMLResponse)
     def edit_draft_form(request: Request, rule_id: int):
         sess, denial = guard(request)
         if denial:
             return denial
-        try:
-            with store.db() as con:
+        with store.db() as con:
+            try:
                 rule = draft_guard(con, rule_id)
-        except RuleManagementError as error:
-            return HTMLResponse(str(error), status_code=error.status_code)
+                proposal = False
+            except RuleManagementError as error:
+                if error.status_code == 404:
+                    return HTMLResponse(str(error), status_code=404)
+                try:
+                    rule = source_snapshot(store, rule_id)
+                except RuleManagementError as missing:
+                    return HTMLResponse(str(missing), status_code=missing.status_code)
+                proposal = True
         current_code = f"{rule['kind']}:{rule['field']}"
-        if current_code not in {f"{k}:{f}" for k, f, _ in RULE_DEFINITIONS}:
-            # Older drafts can use lowercase/noncanonical header casing.
-            current_code = next(
-                f"{k}:{f}" for k, f, _ in RULE_DEFINITIONS if k == rule["kind"])
+        definitions = list(RULE_DEFINITIONS)
+        if proposal:
+            definitions.append(("legacy_raw_header", "raw", "Legacy raw header (review only)"))
+        if current_code not in {f"{k}:{f}" for k, f, _ in definitions}:
+            # Older drafts may use noncanonical header casing.
+            matches = [f"{k}:{f}" for k, f, _ in definitions if k == rule["kind"]]
+            if not matches:
+                return HTMLResponse("Unsupported rule kind", status_code=409)
+            current_code = matches[0]
         return render(request, "rule_edit.html", active="rules", sess=sess,
-                      rule=rule, definitions=RULE_DEFINITIONS,
-                      selected_definition=current_code)
+                      rule=rule, proposal=proposal,
+                      definitions=definitions, selected_definition=current_code,
+                      editor_action=f"/rules/{rule_id}/edit")
 
     @app.post("/rules/{rule_id}/edit", response_class=HTMLResponse)
     def save_edited_draft(request: Request, rule_id: int, csrf: str = Form(""),
@@ -706,7 +729,19 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
         if not valid_csrf(sess, csrf):
             return invalid_csrf()
         try:
-            update_draft(store, rule_id, definition, value, label)
+            with store.db() as con:
+                try:
+                    draft_guard(con, rule_id)
+                    direct_draft = True
+                except RuleManagementError as error:
+                    if error.status_code == 404:
+                        raise
+                    direct_draft = False
+            if direct_draft:
+                update_draft(store, rule_id, definition, value, label)
+            else:
+                queue_review(store, rule_id, "edit",
+                             definition=definition, value=value, label=label)
         except RuleManagementError as error:
             return HTMLResponse(str(error), status_code=error.status_code)
         return RedirectResponse("/rules", status_code=303)
@@ -719,14 +754,97 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
         if not valid_csrf(sess, csrf):
             return invalid_csrf()
         try:
-            new_id = duplicate_draft(store, rule_id)
+            with store.db() as con:
+                try:
+                    draft_guard(con, rule_id)
+                    direct_draft = True
+                except RuleManagementError as error:
+                    if error.status_code == 404:
+                        raise
+                    direct_draft = False
+            if direct_draft:
+                new_id = duplicate_draft(store, rule_id)
+                destination = f"/rules/{new_id}/edit"
+            else:
+                new_id = queue_review(store, rule_id, "duplicate")
+                destination = f"/rule-reviews/{new_id}/edit"
         except RuleManagementError as error:
             return HTMLResponse(str(error), status_code=error.status_code)
-        return RedirectResponse(f"/rules/{new_id}/edit", status_code=303)
+        return RedirectResponse(destination, status_code=303)
+
+    @app.post("/rules/{rule_id}/request", response_class=HTMLResponse)
+    def request_rule_toggle(request: Request, rule_id: int, csrf: str = Form(""),
+                            operation: str = Form(""), confirm: str = Form(""),
+                            account_ids: list[int] = Form([])):
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        if not valid_csrf(sess, csrf):
+            return invalid_csrf()
+        if confirm != "request_review" or operation not in {"enable", "disable"}:
+            return HTMLResponse("Exact rule review confirmation required", status_code=400)
+        try:
+            # A queued request changes NO live rules or root-owned permissions.
+            queue_review(store, rule_id, operation, account_ids=account_ids)
+        except RuleManagementError as error:
+            return HTMLResponse(str(error), status_code=error.status_code)
+        return RedirectResponse("/rules", status_code=303)
+
+    @app.get("/rule-reviews/{request_id}/edit", response_class=HTMLResponse)
+    def edit_rule_review_form(request: Request, request_id: int):
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        try:
+            rule = load_review(store, request_id)
+        except RuleManagementError as error:
+            return HTMLResponse(str(error), status_code=error.status_code)
+        if rule["operation"] not in ("edit", "duplicate") or rule["status"] != "pending_review":
+            return HTMLResponse("This review request is not editable", status_code=409)
+        definitions = list(RULE_DEFINITIONS) + [
+            ("legacy_raw_header", "raw", "Legacy raw header (review only)")]
+        current_code = f"{rule['kind']}:{rule['field']}"
+        if current_code not in {f"{k}:{f}" for k, f, _ in definitions}:
+            return HTMLResponse("Unsupported review definition", status_code=409)
+        return render(request, "rule_edit.html", active="rules", sess=sess,
+                      rule=rule, proposal=True, definitions=definitions,
+                      selected_definition=current_code,
+                      editor_action=f"/rule-reviews/{request_id}/edit")
+
+    @app.post("/rule-reviews/{request_id}/edit", response_class=HTMLResponse)
+    def save_rule_review(request: Request, request_id: int, csrf: str = Form(""),
+                         definition: str = Form(""), value: str = Form(""),
+                         label: str = Form("")):
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        if not valid_csrf(sess, csrf):
+            return invalid_csrf()
+        try:
+            revise_review(store, request_id, definition, value, label)
+        except RuleManagementError as error:
+            return HTMLResponse(str(error), status_code=error.status_code)
+        return RedirectResponse("/rules", status_code=303)
+
+    @app.post("/rule-reviews/{request_id}/cancel", response_class=HTMLResponse)
+    def cancel_rule_review(request: Request, request_id: int, csrf: str = Form(""),
+                           confirm: str = Form("")):
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        if not valid_csrf(sess, csrf):
+            return invalid_csrf()
+        if confirm != "cancel":
+            return HTMLResponse("Confirm cancellation", status_code=400)
+        try:
+            cancel_review(store, request_id)
+        except RuleManagementError as error:
+            return HTMLResponse(str(error), status_code=error.status_code)
+        return RedirectResponse("/rules", status_code=303)
 
     @app.post("/rules/{rule_id}/delete", response_class=HTMLResponse)
     def remove_draft(request: Request, rule_id: int, csrf: str = Form(""),
-                     confirm: str = Form("")):
+                      confirm: str = Form("")):
         sess, denial = guard(request)
         if denial:
             return denial

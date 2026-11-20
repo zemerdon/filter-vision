@@ -1,20 +1,32 @@
 {% extends "base.html" %}
-{% block title %}Edit Rule Draft{% endblock %}
+{% block title %}{{ "Edit proposed rule change" if proposal else "Edit rule draft" }}{% endblock %}
 {% block content %}
 <div class="heading">
   <div>
-    <p class="eyebrow">FILTER ENGINE / RULE #{{ rule.id }}</p>
-    <h1>Edit rule draft</h1>
-    <p class="muted">Update the description, matching method or value for this inactive draft.</p>
+    <p class="eyebrow">FILTER ENGINE / {{ "REVIEW REQUEST" if proposal else "RULE" }} #{{ rule.id }}</p>
+    <h1>{{ "Prepare a rule change" if proposal else "Edit rule draft" }}</h1>
+    <p class="muted">
+      {% if proposal %}
+      Edit an inactive candidate. The original rule and active mail deletion are untouched.
+      {% else %}
+      Update the description, matching method or value for this inactive draft.
+      {% endif %}
+    </p>
   </div>
   <a href="/rules" class="btn">Back to rules</a>
 </div>
 <div class="info">
-  This draft has no approved account scope and cannot delete messages. Saving it will not change
-  or restart the existing root-approved legacy cleaner.
+  {% if proposal %}
+    <strong>Review required.</strong> Saving creates or updates an isolated proposal.
+    It cannot change the root-approved 22 signatures, account scopes or running cleaner.
+    A separate exact-match, previewed approval is required before any active rule changes.
+  {% else %}
+    This draft has no approved account scope and cannot delete messages. Saving it will not change
+    or restart the existing root-approved legacy cleaner.
+  {% endif %}
 </div>
 <div class="panel rule-edit-panel">
-  <form method="post" action="/rules/{{ rule.id }}/edit" class="rule-edit-form">
+  <form method="post" action="{{ editor_action }}" class="rule-edit-form">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <label for="rule-label">Rule name
       <input id="rule-label" type="text" name="label" value="{{ rule.label }}" maxlength="200"
@@ -32,10 +44,12 @@
       <input id="rule-value" type="text" name="value" value="{{ rule.pattern }}" maxlength="255"
              autocomplete="off" spellcheck="false" required>
     </label>
-    <p class="muted small">Specific sender addresses and headers are safer than broad subject or domain conditions.
-      A new matching method is checked server-side before saving.</p>
+    <p class="muted small">
+      Specific sender addresses and headers are safer than broad subject or domain conditions.
+      Proposed raw-header matches are never directly activated.
+    </p>
     <div class="rule-edit-actions">
-      <button type="submit" class="btn primary">Save draft</button>
+      <button type="submit" class="btn primary">{{ "Save proposed change" if proposal else "Save draft" }}</button>
       <a href="/rules" class="btn">Cancel</a>
     </div>
   </form>

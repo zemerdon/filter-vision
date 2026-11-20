@@ -157,3 +157,16 @@ input,select,textarea{min-width:0;background:#0b161d;border:1px solid #37505b;pa
   .manual-evaluate-form,.manual-outcome-grid{grid-template-columns:1fr}
   .manual-evaluate-form>div{grid-column:auto}
 }
+
+/* Reviewed rule changes: all rule controls share the compact Filter Vision theme. */
+.rule-tools .review-request-control{position:relative}
+.review-request-control>summary{list-style:none;user-select:none;cursor:pointer}
+.review-request-control>summary::-webkit-details-marker{display:none}
+.review-request-form{margin-top:8px;background:#121f29;border:1px solid #315e69;border-radius:6px;padding:12px;min-width:250px;max-width:330px}
+.review-request-form p{margin:0 0 10px}
+.review-request-form .review-accounts{border:1px solid #2b4855;border-radius:5px;padding:8px 10px;margin:0 0 12px}
+.review-accounts legend{font-size:11px;color:#aed3de;padding:0 6px}
+.review-accounts label,.review-request-form .review-confirm{display:flex;align-items:flex-start;gap:8px;margin:8px 0;color:#d1e0e9;font-size:12px;text-align:left}
+.review-accounts label input,.review-confirm input{flex:none;accent-color:#56cdd1}
+.review-request-form button{margin-top:6px}
+@media(max-width:900px){.review-request-form{min-width:0;max-width:100%}}

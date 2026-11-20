@@ -5,15 +5,17 @@
   <div>
     <p class="eyebrow">FILTER ENGINE</p>
     <h1>Rules</h1>
-    <p class="muted">Manage saved drafts and inspect the original approved filtering rules.</p>
+    <p class="muted">Review, edit and duplicate filtering rules. Live deletion changes always require approval.</p>
   </div>
   <span class="pill">{{ "LEGACY FILTERING APPROVED" if approved_ids else "DRAFTS ONLY" }}</span>
 </div>
 <div class="info">
-  <strong>Rule protection:</strong>
-  The {{ approved_ids|length }} original root-approved legacy rules are read-only here. Editing or removing their
-  signatures would change active mail deletion and requires a separately reviewed approval workflow.
-  Newly saved, unscoped drafts can be edited, duplicated or deleted without affecting live filtering.
+  <strong>Live rule protection:</strong>
+  The {{ approved_ids|length }} root-approved legacy rules are currently part of the protected cleaner.
+  <strong>Edit</strong> or <strong>Duplicate</strong> on these creates a separate inactive proposal;
+  <strong>Enable</strong> or <strong>Disable</strong> records a review request.
+  None of these requests changes live mail deletion, account scopes or the original signatures until
+  separately verified and explicitly approved. Ordinary unscoped drafts can be edited or duplicated immediately.
 </div>
 <div class="panel">
   <h2>Saved filtering rules <span class="pill">{{ rules|length }}</span></h2>
@@ -32,22 +34,53 @@
           <td data-label="Header">{{ r.field }}</td>
           <td data-label="Value" class="value-cell">{{ r.pattern }}</td>
           <td data-label="Action">{{ "UID-specific delete in Junk" if r.id in approved_ids else "None" }}</td>
-          <td data-label="Status">
-            <span class="pill">{{ "Root-approved legacy" if r.id in approved_ids else "Disabled draft" if r.id in editable_ids else "Protected record" }}</span>
-          </td>
+          <td data-label="Status"><span class="pill">{{
+              "Active · root-approved" if r.id in approved_ids
+              else "Disabled draft" if r.id in editable_ids
+              else "Not active · protected"
+            }}</span></td>
           <td data-label="Manage">
-            {% if r.id in editable_ids %}
             <div class="rule-tools">
               <a class="btn small-btn" href="/rules/{{ r.id }}/edit">Edit</a>
               <form action="/rules/{{ r.id }}/duplicate" method="post">
                 <input type="hidden" name="csrf" value="{{ csrf }}">
                 <button type="submit" class="btn small-btn">Duplicate</button>
               </form>
+              <details class="review-request-control">
+                <summary class="btn small-btn">{{ "Disable…" if r.id in approved_ids else "Enable…" }}</summary>
+                <form action="/rules/{{ r.id }}/request" method="post" class="review-request-form">
+                  <input type="hidden" name="csrf" value="{{ csrf }}">
+                  <input type="hidden" name="operation" value="{{ 'disable' if r.id in approved_ids else 'enable' }}">
+                  {% if r.id in approved_ids %}
+                    <p class="muted small">
+                      Request disabling root-approved rule #{{ r.id }} on its approved accounts.
+                      The current cleaner continues unchanged until separately approved.
+                    </p>
+                  {% else %}
+                    <p class="muted small">Request activation for rule #{{ r.id }}.
+                      Choose the accounts. A safe preview and root-policy approval are needed
+                      before this rule may delete mail.</p>
+                    <fieldset class="review-accounts">
+                      <legend>Accounts to review</legend>
+                      {% for a in accounts %}
+                        <label><input type="checkbox" name="account_ids" value="{{ a.id }}">
+                          {{ a.label }}</label>
+                      {% endfor %}
+                    </fieldset>
+                  {% endif %}
+                  <label class="review-confirm">
+                    <input type="checkbox" name="confirm" value="request_review" required>
+                    <span>I understand this creates a review request, not a live rule change</span>
+                  </label>
+                  <button class="btn small-btn" type="submit">Submit for review</button>
+                </form>
+              </details>
+              {% if r.id in editable_ids %}
               <details class="delete-draft-control">
                 <summary class="btn small-btn danger-btn">Delete</summary>
                 <form action="/rules/{{ r.id }}/delete" method="post" class="delete-draft-form">
                   <input type="hidden" name="csrf" value="{{ csrf }}">
-                  <p class="muted small">Delete draft #{{ r.id }}? This does not affect protected live rules.</p>
+                  <p class="muted small">Delete inactive draft #{{ r.id }}? This never changes live filtering.</p>
                   <label class="draft-delete-confirm">
                     <input type="checkbox" name="confirm" value="delete" required>
                     <span>Yes, delete this draft</span>
@@ -55,10 +88,8 @@
                   <button type="submit" class="btn small-btn danger-btn">Confirm delete</button>
                 </form>
               </details>
+              {% endif %}
             </div>
-            {% else %}
-              <span class="muted small" title="Root-managed approval prevents changing active legacy rules here.">Protected · read-only</span>
-            {% endif %}
           </td>
         </tr>
       {% endfor %}
@@ -66,7 +97,49 @@
     </table>
   </div>
   {% else %}
-    <p class="empty">No rules yet. <a href="/analyze">Analyze an .eml file</a> to create an inactive draft.</p>
+    <p class="empty">No rules yet. <a href="/analyze">Analyze an email</a> to create an inactive draft.</p>
+  {% endif %}
+</div>
+<div class="panel">
+  <h2>Pending rule reviews <span class="pill">{{ review_requests|length }}</span></h2>
+  <p class="muted small">
+    Pending requests are proposals only. They are not enabled rules and do not alter
+    the approved 22 signatures or active mail deletion. Approval and any live changes
+    remain a separate guarded operation.
+  </p>
+  {% if review_requests %}
+    <div class="table-wrap rules-table-wrap">
+      <table class="rules-table">
+        <thead>
+          <tr><th>Request</th><th>Source</th><th>Change</th><th>Proposed name</th><th>Matching value</th><th>Status</th><th>Manage</th></tr>
+        </thead>
+        <tbody>
+          {% for change in review_requests %}
+          <tr>
+            <td data-label="Request">#{{ change.id }}</td>
+            <td data-label="Source">Rule #{{ change.source_rule_id }}</td>
+            <td data-label="Change">{{ change.operation|title }}</td>
+            <td data-label="Proposed name">{{ change.label }}</td>
+            <td data-label="Matching value" class="value-cell">{{ change.pattern }}</td>
+            <td data-label="Status"><span class="pill warning">Pending review</span></td>
+            <td data-label="Manage">
+              <div class="rule-tools">
+                {% if change.operation in ('edit','duplicate') %}
+                <a class="btn small-btn" href="/rule-reviews/{{ change.id }}/edit">Edit proposal</a>
+                {% endif %}
+                <form action="/rule-reviews/{{ change.id }}/cancel" method="post">
+                  <input type="hidden" name="csrf" value="{{ csrf }}">
+                  <button class="btn small-btn" type="submit" name="confirm" value="cancel">Cancel request</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="empty">No changes awaiting approval.</p>
   {% endif %}
 </div>
 {% endblock %}
