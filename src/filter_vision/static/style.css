@@ -57,3 +57,32 @@ input,select,textarea{min-width:0;background:#0b161d;border:1px solid #37505b;pa
 
 .run-confirm{display:flex;align-items:center;gap:7px;color:#e5c5b1;font-size:11px;max-width:250px}
 .run-confirm input{accent-color:#c89877}
+
+/* Activity dashboard, expandable private email preview, and update notes. */
+.activity-stats{grid-template-columns:repeat(5,minmax(0,1fr))}
+.activity-stats .stat{min-height:104px}
+.activity-table{min-width:650px}
+.activity-time{white-space:nowrap;color:#9ec8d2;font-variant-numeric:tabular-nums}
+.activity-detail{min-width:300px;overflow-wrap:anywhere}
+.activity-type{text-transform:capitalize}
+.email-expand{margin-top:9px}
+.email-expand summary{display:list-item;cursor:pointer;color:var(--teal);font-weight:650;padding:5px 0}
+.email-expand summary:hover{text-decoration:underline}
+.email-preview{background:#0b161d;border:1px solid #2b535c;border-radius:6px;padding:13px;margin-top:9px}
+.email-preview dl{display:grid;grid-template-columns:95px minmax(0,1fr);gap:8px 12px;margin:10px 0}
+.email-preview dt{color:var(--muted);font-size:11px}
+.email-preview dd{margin:0;overflow-wrap:anywhere}
+.email-preview .pill{display:inline-block;max-width:100%;white-space:normal;margin:3px}
+.email-body-title{font-size:11px;color:var(--muted);margin-bottom:8px}
+.email-body{white-space:pre-wrap;overflow-wrap:anywhere;max-height:330px;overflow-y:auto;background:#101f28;border:1px solid var(--line);border-radius:4px;padding:12px;font:12px/1.6 ui-monospace,Consolas,monospace;color:var(--text)}
+.release-notes{margin-top:16px;border-top:1px solid var(--line);padding-top:12px}
+.release-notes h3{font-size:14px;margin:0 0 9px}
+.release-list{margin:8px 0 4px;padding-left:22px}
+.release-list li{padding:4px 0;overflow-wrap:anywhere}
+.manual-run-card{border:1px solid #36535c;border-radius:6px;background:#14222b;padding:16px;margin-top:14px}
+.manual-run-card h3{margin:0;font-size:14px}
+.manual-run-form{display:flex;flex-direction:column;align-items:flex-start;gap:15px;margin-top:12px}
+.manual-run-form .run-confirm{max-width:none;display:flex;align-items:center;gap:12px;color:#e8cdc0;line-height:1.5}
+.manual-run-form .run-confirm input{appearance:auto;width:17px;height:17px;min-width:17px;min-height:17px;padding:0;margin:0;flex:0 0 17px}
+@media(max-width:1000px){.activity-stats{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:680px){.activity-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.email-preview dl{grid-template-columns:1fr;gap:2px}.email-preview dt:not(:first-child){margin-top:6px}.manual-run-card{padding:13px}}

@@ -47,23 +47,45 @@
   <h2>Service controls</h2>
   <p class="small muted">Stop pauses future scheduled scans; it does not terminate one already in progress. Restart restarts the schedule, not the application WebUI. Run Now executes the approved live cleaner immediately and can permanently delete matching Junk messages.</p>
   <div class="service-actions">
-    {% for action, label in [('start','Start Schedule'), ('stop','Stop Schedule'), ('restart','Restart Schedule'), ('run-now','Run Now')] %}
+    {% for action, label in [('start','Start Schedule'), ('stop','Stop Schedule'), ('restart','Restart Schedule')] %}
     <form method="post" action="/settings/cleaner">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <input type="hidden" name="action" value="{{ action }}">
-      {% if action == 'run-now' %}
-      <label class="run-confirm"><input type="checkbox" name="confirm_run" value="yes" required>
-        I understand matching Junk mail will be permanently deleted</label>
-      {% endif %}
-      <button type="submit" class="btn {% if action == 'run-now' %}action-warn{% endif %}"
-        {% if not cleaner.control_installed or cleaner.request_pending or not cleaner.available or (action == 'start' and cleaner.schedule_active) or (action in ('stop','restart') and not cleaner.schedule_active) or (action == 'run-now' and (cleaner.scan_running or approved_count == 0)) %}disabled{% endif %}>
-        {{ label }}
-      </button>
+      <button type="submit" class="btn"
+        {% if not cleaner.control_installed or cleaner.request_pending or not cleaner.available or (action == 'start' and cleaner.schedule_active) or (action in ('stop','restart') and not cleaner.schedule_active) %}disabled{% endif %}>{{ label }}</button>
     </form>
     {% endfor %}
   </div>
+  <div class="manual-run-card">
+    <h3>Run cleaner now</h3>
+    <p class="muted small">Starts a live scan immediately. Matching messages may be permanently deleted.</p>
+    <form method="post" action="/settings/cleaner" class="manual-run-form">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="action" value="run-now">
+      <label class="run-confirm">
+        <input type="checkbox" name="confirm_run" value="yes" required>
+        <span>I understand matching Junk mail will be permanently deleted.</span>
+      </label>
+      <div><button type="submit" class="btn action-warn"
+        {% if not cleaner.control_installed or cleaner.request_pending or not cleaner.available or cleaner.scan_running or approved_count == 0 %}disabled{% endif %}>Run Now</button></div>
+    </form>
+  </div>
   {% if not cleaner.control_installed %}<p class="small muted">Service controls are not installed on this instance. The existing cleaner state is unchanged.</p>{% endif %}
   <p class="small muted">These buttons manage only Filter Vision's cleaner timer and scan service. They do not start the retired legacy cleaner or change OAuth credentials or rule approvals.</p>
+</div>
+
+<div class="panel" id="activity-settings">
+  <h2>Activity</h2>
+  <p class="muted">Choose how many events are displayed on the Activity page. This changes the visible list, not the stored history or statistics.</p>
+  <form class="schedule-form" method="post" action="/settings/activity">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="activity-limit">Show latest</label>
+    <select id="activity-limit" name="activity_limit">
+      {% for count in activity_options %}<option value="{{ count }}" {% if activity_limit == count %}selected{% endif %}>{{ count }} entries</option>{% endfor %}
+    </select>
+    <button class="btn" type="submit">Save Activity setting</button>
+  </form>
+  <p class="small muted">Matched emails are stored as encrypted, bounded text-only previews for future detailed filter events. This does not retroactively recover emails already deleted.</p>
 </div>
 
 <div class="panel"><h2>Capabilities</h2>

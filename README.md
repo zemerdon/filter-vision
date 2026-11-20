@@ -86,9 +86,11 @@ The first certificate is self-signed; an initial browser warning is expected. Re
 | **Targeted deletion** | Requires IMAP UIDPLUS; UID-specific STORE/EXPUNGE rather than blanket expunge |
 | **Schedule controls** | Status, last/next run, adjustable 5-minute to 24-hour interval |
 | **Service controls** | Start, Stop and Restart Schedule; confirmed Run Now |
-| **Activity** | SQLite audit records and recent scan summaries |
-| **Updates** | In-app GitHub stable release check and application |
-| **Recovery** | Encrypted full-state backup and verified staging restore through protected server tooling |
+| **Activity & statistics** | Readable server-local timestamps, total scans/examined/matched/deleted counts, failures and confirmed per-rule filtering counts |
+| **Expandable filtered emails** | Future confirmed matches show exact applied rules and encrypted text-only previews, with no attachments or active HTML |
+| **Activity settings** | Show 25, 50, 100, 250 or 500 recent records; full audit statistics remain retained |
+| **Updates** | In-app GitHub stable release check, readable bullet-point changelog and actual running-version verification |
+| **Recovery** | Encrypted full-state backup including the private activity decryption key, with verified staging restore through protected server tooling |
 
 ### Designed to avoid false positives
 
@@ -99,6 +101,7 @@ Filter Vision does **not** treat a suspicious message as permission to delete it
 - Connecting Microsoft does not automatically start deletion.
 - Live filtering requires protected account-and-rule approval.
 - The worker checks the Junk folder, UID validity, message headers and UIDPLUS capabilities before deleting an approved match.
+- A bounded, encrypted message-action history record is required **before** a future matched message can be permanently deleted; if that record cannot be saved, deletion is refused.
 - Required safety checks fail closed rather than falling back to a mailbox-wide EXPUNGE.
 
 **A permanently expunged message cannot be restored by an application backup.**
@@ -113,13 +116,13 @@ Filter Vision has seven main pages:
 | **Accounts** | Microsoft connect/reauthorize, account drafts and read-only Junk preview |
 | **Analyze Email** | Upload .eml files, compare header candidates and save disabled rule drafts |
 | **Rules** | Review stored signatures, root-approved legacy rules and draft status |
-| **Activity** | Recent administrative events and cleaner scan summaries |
-| **Updates** | Check for and apply a verified GitHub stable release |
-| **Settings** | Real service/timer status, scheduling, Start/Stop/Restart and confirmed Run Now |
+| **Activity** | Scan and filtering statistics, per-rule effectiveness, readable server time and expandable text-only matched-message details |
+| **Updates** | Check/apply verified GitHub stable releases, read the in-app bullet changelog and see the actual running version |
+| **Settings** | Timer status, scan interval, Activity display length and cleaner Start/Stop/Restart with a clearly separated Run Now confirmation |
 
 The current .eml analyzer accepts **up to 20 files**, **2 MiB per file**, **10 MiB total**; it does not automatically activate filtering.
 
-**History limitation:** Activity currently shows the latest 50 audit events with aggregate scan information and Unix timestamps. Searchable per-message rule-match history, friendly timestamps, exports and retention controls are planned.
+**History and privacy:** Activity defaults to the newest 50 records, configurable to 25–500, and shows readable times in the **server's actual timezone**. Lifetime totals include older aggregate audit records, but per-rule email attribution and expandable encrypted message previews are available **only for future matches logged since v0.2.4**; email previously deleted cannot be reconstructed. The preview retains only bounded safe text, not attachments, scripts or raw HTML. Searchable history, exports and retention controls remain planned.
 
 ## 🔗 Getting started
 
@@ -178,7 +181,7 @@ There is **no develop update channel**. The updater checks verified release asse
 
 Filter Vision is an **early stable release** with a working Microsoft-focused legacy-compatible cleaner. It is **not yet a general-purpose multi-provider spam filtering engine**.
 
-Planned improvements include searchable privacy-aware history, detailed rule-match/deletion auditing, scan health alerts, reviewed per-account/per-rule activation, more email providers, automatic Microsoft callback handling, in-page recovery controls and real Proxmox field-install acceptance.
+Planned improvements include searchable privacy-aware Activity history and export/retention controls, more complete scan health alerts, reviewed per-account/per-rule activation, more email providers, automatic Microsoft callback handling, in-page recovery controls and real Proxmox field-install acceptance.
 
 ## 💬 Feedback
 

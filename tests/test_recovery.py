@@ -39,6 +39,7 @@ def test_encrypted_backup_verify_restore_includes_both_oauth_keys(tmp_path):
     assert "data/oauth/1.token" in files
     assert "data/oauth/2.token" in files
     assert "data/browser-session.key" in files
+    assert "data/activity.key" in files
     assert "data/filter-vision.sqlite3" in files
     report=restore_staging(archive,key,tmp_path/"restored-data",tmp_path/"restored-config")
     assert report["token_files"]==2

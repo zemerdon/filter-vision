@@ -49,8 +49,13 @@ class LiveIMAP:
         if command == "SEARCH":
             return "OK", [b"3 4"]
         if command == "FETCH":
-            assert args[1] == "(BODY.PEEK[HEADER])"
             assert args[0] in (b"3", b"4")
+            if args[1] == "(BODY.PEEK[]<0.32768>)":
+                return "OK", [(b"BODY", b"From: archive@sender.invalid\r\n"
+                               b"Subject: Test archived message\r\n"
+                               b"Content-Type: text/plain; charset=utf-8\r\n\r\n"
+                               b"Safe text body from mock mailbox")]
+            assert args[1] == "(BODY.PEEK[HEADER])"
             if args[0] == b"3":
                 return "OK", [(b"HEADER", b"From: harmless@example.invalid\r\n"
                                 b"X-MS-Exchange-Organization-SCL: 9\r\n")]
@@ -143,7 +148,27 @@ def test_live_account_requires_exact_import_approved_digest_and_scopes(tmp_path,
                             policy_path=policy,marker=marker,require_root=False)
     assert result["deleted"]==1  # Unique-7 matches Unique-77: exact legacy substring parity
     assert live.logged_out
+    # New safe drafts may be saved by Analyze Email and must not suspend
+    # the same 22 root-approved legacy signatures.
     with store.db() as c:
+        c.execute("INSERT INTO rules(id,label,kind,field,pattern,enabled,action,created_at) "
+                  "VALUES(23,'Safe new draft','sender_domain','from',"
+                  "'unapproved.example.invalid',0,'draft',2)")
+    repeat=run_live_account(store,1,connector=LiveIMAP,
+                            policy_path=policy,marker=marker,require_root=False)
+    assert repeat["deleted"] == 1
+    # The extra draft must NOT be allowed into the protected scope.
+    with store.db() as c:
+        c.execute("INSERT INTO rule_scopes(rule_id,account_id) VALUES(23,1)")
+    with pytest.raises(LiveSafetyError, match="scope count"):
+        run_live_account(store,1,connector=LiveIMAP,
+                         policy_path=policy,marker=marker,require_root=False)
+    with store.db() as c:
+        c.execute("DELETE FROM rule_scopes WHERE rule_id=23")
+        log = c.execute("SELECT rule_ids,state,preview_ciphertext FROM message_actions").fetchone()
+        assert log and log["state"] == "deleted" and log["rule_ids"] == "[7]"
+        assert b"Safe text body" not in log["preview_ciphertext"]
+        assert store.decrypt_message_preview(log["preview_ciphertext"])["body"] == "Safe text body from mock mailbox"
         c.execute("UPDATE rules SET pattern='X-Some-New-Rule' WHERE id=1")
     with pytest.raises(LiveSafetyError, match="changed since approval"):
         run_live_account(store,1,connector=LiveIMAP,policy_path=policy,

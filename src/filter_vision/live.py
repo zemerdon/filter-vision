@@ -16,6 +16,7 @@ import stat
 from pathlib import Path
 
 from .import_legacy import legacy_matches
+from .history import MAX_CAPTURE_BYTES, safe_email_preview
 from .oauth import TokenVault, access_token_for
 from .storage import Store
 from .worker import DryRunError, _uid_validity, _header_bytes
@@ -81,28 +82,35 @@ def _active_rules(store: Store, account_id: int, policy: dict):
         imported = c.execute("SELECT source_sha256, account_count, rule_count "
                              "FROM legacy_imports").fetchall()
         accounts = c.execute("SELECT COUNT(*) FROM accounts").fetchone()[0]
+    # Only the 22 original imported raw-header signatures are root-approved.
+    # New disabled, unscoped analysis drafts must neither join that digest
+    # nor suspend the already-approved cleaner merely by existing in SQLite.
+    approved = [r for r in all_rules if r["kind"] == "legacy_raw_header"]
     if not row or account_id not in policy["accounts"]:
         raise LiveSafetyError("Account not approved for live filtering")
     if (row["provider"], row["host"], row["port"], row["folder"],
             row["interval_minutes"], row["enabled"]) != (
                 "outlook", "outlook.office365.com", 993, "Junk", 30, 0):
         raise LiveSafetyError("Imported account settings have changed")
-    if accounts != 2 or refs != 44 or len(all_rules) != 22 or len(scoped) != 22:
+    if accounts != 2 or refs != 44 or len(approved) != 22 or len(scoped) != 22:
         raise LiveSafetyError("Legacy account/rule scope count changed")
     if (len(imported) != 1 or imported[0]["source_sha256"] != LEGACY_SOURCE_SHA
             or imported[0]["account_count"] != 2 or imported[0]["rule_count"] != 22):
         raise LiveSafetyError("Legacy import identity changed")
-    if any(r["kind"] != "legacy_raw_header" or r["enabled"] != 0 or
-           r["action"] != "draft" or not r["pattern"] for r in all_rules):
+    if any(r["enabled"] != 0 or r["action"] != "draft" for r in all_rules):
         raise LiveSafetyError("Unexpected active or unsupported rule")
-    if rules_digest(all_rules) != policy["rules_sha256"]:
+    if any(not r["pattern"] for r in approved):
+        raise LiveSafetyError("Empty approved legacy signature")
+    if rules_digest(approved) != policy["rules_sha256"]:
         raise LiveSafetyError("Rule signatures changed since approval")
-    if set(r["id"] for r in scoped) != set(r["id"] for r in all_rules):
+    # Scopes still must match EXACTLY the frozen 22 approved signatures;
+    # additional drafts are not allowed to join either account's live rules.
+    if set(r["id"] for r in scoped) != set(r["id"] for r in approved):
         raise LiveSafetyError("Account scope mismatches approved legacy rules")
     return dict(row), scoped
 
 
-def _scan_live(conn, account_id: int, rules: list[dict]) -> dict:
+def _scan_live(conn, account_id: int, rules: list[dict], journal=None) -> dict:
     caps = {v.decode("ascii", "ignore").upper() if isinstance(v, bytes) else str(v).upper()
             for v in conn.capabilities}
     if "UIDPLUS" not in caps:
@@ -143,12 +151,28 @@ def _scan_live(conn, account_id: int, rules: list[dict]) -> dict:
         kind, verify = conn.uid("FETCH", uid, "(BODY.PEEK[HEADER])")
         if kind != "OK" or _header_bytes(verify) != header:
             raise LiveSafetyError("Message headers changed; refusing delete")
+        # Capture a small, non-executable text preview for expandable Activity.
+        # Persist an encrypted pending record BEFORE any deletion, so a failed
+        # persistence/preview request cannot result in unlogged destruction.
+        action_id = None
+        if journal is not None:
+            kind, source = conn.uid("FETCH", uid, f"(BODY.PEEK[]<0.{MAX_CAPTURE_BYTES}>)")
+            if kind != "OK":
+                raise LiveSafetyError("Bounded message preview failed; refusing delete")
+            try:
+                preview = safe_email_preview(header, _header_bytes(source))
+                action_id = journal.record_pending_action(
+                    account_id, int(uid), matched, preview)
+            except (ValueError, TypeError, OSError):
+                raise LiveSafetyError("Cannot securely record matched message; refusing delete") from None
         kind, _ = conn.uid("STORE", uid, "+FLAGS.SILENT", r"(\Deleted)")
         if kind != "OK":
             raise LiveSafetyError("UID-specific Deleted flag failed")
         kind, _ = conn.uid("EXPUNGE", uid)
         if kind != "OK":
             raise LiveSafetyError("UID-specific EXPUNGE failed")
+        if action_id is not None:
+            journal.mark_action_deleted(action_id)
         result["deleted"] += 1
     return result
 
@@ -180,7 +204,7 @@ def run_live_account(store: Store, account_id: int, connector=None,
             kind, _ = conn.authenticate("XOAUTH2", lambda _: payload)
             if kind != "OK":
                 raise LiveSafetyError("Microsoft IMAP authentication rejected")
-            result = _scan_live(conn, account_id, rules)
+            result = _scan_live(conn, account_id, rules, journal=store)
         finally:
             # IMAP CLOSE would expunge flagged messages; never use it.
             try: conn.logout()

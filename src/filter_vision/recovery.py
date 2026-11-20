@@ -24,7 +24,8 @@ MAGIC = b"FVBK1"
 MAX_ARCHIVE = 64 * 1024 * 1024
 CONFIG_NAMES = {"web.env", "tls.crt", "tls.key", "oauth-clients.json",
                 "cleaner-policy.json", "legacy-offline"}
-DATA_NAMES = {"browser-session.key", "oauth/fernet.key", "filter-vision.sqlite3"}
+DATA_NAMES = {"browser-session.key", "oauth/fernet.key", "activity.key",
+              "filter-vision.sqlite3"}
 
 
 class BackupError(RuntimeError):
@@ -94,6 +95,21 @@ def _collect(data_dir: Path, config_dir: Path) -> dict[str, bytes]:
             files[f"data/oauth/{token.name}"] = _read_file(token)
     if any(k.endswith(".token") for k in files) and "data/oauth/fernet.key" not in files:
         raise BackupError("OAuth key missing from backup")
+    snapshot = sqlite3.connect(":memory:")
+    try:
+        original = sqlite3.connect(data_dir / "filter-vision.sqlite3")
+        try:
+            original.backup(snapshot)
+        finally:
+            original.close()
+        if snapshot.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_actions'"
+        ).fetchone():
+            if snapshot.execute("SELECT COUNT(*) FROM message_actions").fetchone()[0]:
+                if "data/activity.key" not in files:
+                    raise BackupError("Activity encryption key missing from backup")
+    finally:
+        snapshot.close()
     for name in CONFIG_NAMES:
         f = config_dir / name
         if f.exists() or f.is_symlink():
@@ -158,6 +174,19 @@ def _unpack(payload: bytes) -> dict[str, bytes]:
             connection.close()
     if any(name.endswith(".token") for name in files) and "data/oauth/fernet.key" not in files:
         raise BackupError("Encrypted OAuth tokens without vault key")
+    with tempfile.TemporaryDirectory() as name:
+        database = Path(name) / "state.sqlite3"
+        database.write_bytes(files["data/filter-vision.sqlite3"])
+        db = sqlite3.connect(database)
+        try:
+            has_table = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_actions'"
+            ).fetchone()
+            if has_table and db.execute("SELECT COUNT(*) FROM message_actions").fetchone()[0] > 0:
+                if "data/activity.key" not in files:
+                    raise BackupError("Mail history requires activity encryption key")
+        finally:
+            db.close()
     return files
 
 

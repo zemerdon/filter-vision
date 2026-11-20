@@ -20,18 +20,22 @@ def test_disabled_account_draft(signed_in, app):
 
 def test_stable_updates_queues_fixed_action(signed_in, app, monkeypatch):
     client, csrf = signed_in
-    payload = {"tag_name": "v0.2.4", "html_url":
-               "https://github.com/zemerdon/filter-vision/releases/tag/v0.2.4",
-               "target_commitish": "stable", "prerelease": False, "draft": False}
+    payload = {"tag_name": "v0.2.5", "html_url":
+               "https://github.com/zemerdon/filter-vision/releases/tag/v0.2.5",
+                "target_commitish": "stable", "prerelease": False, "draft": False,
+               "body": "- Added activity statistics\n- Fixed update version display"}
     def fake_open(*args, **kwargs):
         return io.BytesIO(json.dumps(payload).encode())
     monkeypatch.setattr("urllib.request.urlopen", fake_open)
     assert client.post("/updates/check", data={"csrf": csrf},
                        follow_redirects=False).status_code == 303
     page = client.get("/updates").text
-    assert "v0.2.4" in page
-    assert "Apply v0.2.4 stable update" in page
+    assert "v0.2.5" in page
+    assert "Apply v0.2.5 stable update" in page
     assert "no develop update channel" in page.lower()
+    assert "<li>Added activity statistics</li>" in page
+    assert "<li>Fixed update version display</li>" in page
+    assert "View v0.2.5 release notes on GitHub" not in page
     assert client.post("/updates/apply", data={"csrf": csrf+"x"}).status_code == 403
     assert client.post("/updates/apply", data={"csrf": csrf},
                        follow_redirects=False).status_code == 303
@@ -54,8 +58,8 @@ def test_stable_updates_invalid_api_payload(signed_in, monkeypatch):
 
 def test_stable_updates_rejects_wrong_branch(signed_in, monkeypatch):
     client, csrf = signed_in
-    payload = {"tag_name": "v0.2.4", "html_url":
-               "https://github.com/zemerdon/filter-vision/releases/tag/v0.2.4",
+    payload = {"tag_name": "v0.2.5", "html_url":
+               "https://github.com/zemerdon/filter-vision/releases/tag/v0.2.5",
                "target_commitish": "main", "prerelease": False, "draft": False}
     monkeypatch.setattr("urllib.request.urlopen",
                         lambda *a,**kw: io.BytesIO(json.dumps(payload).encode()))
@@ -67,11 +71,52 @@ def test_stable_updates_rejects_wrong_branch(signed_in, monkeypatch):
 
 def test_stable_updates_rejects_prerelease(signed_in, monkeypatch):
     client, csrf = signed_in
-    payload = {"tag_name": "v0.2.4", "html_url":
-               "https://github.com/zemerdon/filter-vision/releases/tag/v0.2.4",
+    payload = {"tag_name": "v0.2.5", "html_url":
+               "https://github.com/zemerdon/filter-vision/releases/tag/v0.2.5",
                "target_commitish": "stable", "prerelease": True, "draft": False}
     monkeypatch.setattr("urllib.request.urlopen",
                         lambda *a,**kw: io.BytesIO(json.dumps(payload).encode()))
     assert client.post("/updates/check", data={"csrf": csrf},
                        follow_redirects=False).status_code == 303
     assert "stable release check unavailable" in client.get("/updates").text.lower()
+
+
+def test_updates_running_version_not_stale_after_a_completed_upgrade(
+        client, app, monkeypatch):
+    import importlib
+    web=importlib.import_module("filter_vision.app")
+    assert web.__version__ == "0.2.4"
+    app.state.latest={
+        "tag":"v0.2.4",
+        "url":"https://github.com/zemerdon/filter-vision/releases/tag/v0.2.4",
+        "is_newer":True, "notes":["An old cached release"], "error":"",
+    }
+    monkeypatch.setattr(web,"update_status",lambda: {
+        "state":"success", "version":"v0.2.3", "detail":"Earlier success"})
+    page=client.get("/updates").text
+    assert "v0.2.4" in page
+    assert "No newer version reported" in page
+    assert "Apply v0.2.4 stable update" not in page
+    assert "while it restarts" not in page
+    app.state.latest={
+        "tag":"v0.2.5",
+        "url":"https://github.com/zemerdon/filter-vision/releases/tag/v0.2.5",
+        "is_newer":True,"notes":["Privacy-friendly scan history"],"error":"",
+    }
+    monkeypatch.setattr(web,"update_status",lambda: {
+        "state":"success", "version":"v0.2.5", "detail":"Install completed"})
+    page=client.get("/updates").text
+    assert "The WebUI is still reporting v0.2.4 while it restarts" in page
+    assert 'http-equiv="refresh"' in page
+    assert "Apply v0.2.5 stable update" not in page
+
+
+def test_release_notes_html_is_escaped(client, app, monkeypatch):
+    app.state.latest={
+        "tag":"v0.2.5",
+        "url":"https://github.com/zemerdon/filter-vision/releases/tag/v0.2.5",
+        "is_newer":True,"notes":["<script>alert('XSS')</script>"],"error":"",
+    }
+    html=client.get("/updates").text
+    assert "<script>alert" not in html
+    assert "&lt;script&gt;" in html

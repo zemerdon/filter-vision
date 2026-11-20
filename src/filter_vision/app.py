@@ -29,7 +29,9 @@ from fastapi.templating import Jinja2Templates
 
 from . import __version__
 from .analysis import MAX_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES, inspect_eml, suggestions, validate_rule
-from .storage import Store
+from .storage import Store, ACTIVITY_LIMITS
+from .history import report as history_report
+from .release_notes import changelog_items
 from .updates import status as update_status, request_update
 from .oauth import (TokenVault, OAuthError, start_device_auth, poll_device_auth,
                     verify_imap_auth, access_token_for,
@@ -544,18 +546,31 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
         sess, denial = guard(request)
         if denial:
             return denial
-        with store.db() as con:
-            events = [dict(x) for x in con.execute(
-                "SELECT * FROM audit_events ORDER BY id DESC LIMIT 50")]
-        return render(request, "activity.html", active="activity", sess=sess, events=events)
+        history = history_report(store)
+        return render(request, "activity.html", active="activity", sess=sess, history=history)
 
     @app.get("/updates", response_class=HTMLResponse)
     def updates(request: Request):
         sess, denial = guard(request)
         if denial:
             return denial
+        state = update_status()
+        latest = dict(app.state.latest)
+        if latest.get("tag"):
+            latest["is_newer"] = (
+                tuple(map(int, latest["tag"][1:].split("."))) >
+                tuple(map(int, __version__.split(".")))
+            )
+        status_version = str(state.get("version", "")).removeprefix("v")
+        restart_pending = bool(
+            state.get("state") == "success"
+            and re.fullmatch(r"\d+\.\d+\.\d+", status_version)
+            and tuple(map(int, status_version.split("."))) >
+                tuple(map(int, __version__.split(".")))
+        )
         return render(request, "updates.html", active="updates", sess=sess,
-                      latest=app.state.latest, update_status=update_status(),
+                      latest=latest, update_status=state,
+                      restart_pending=restart_pending,
                       request_pending=(store.directory / "update-request").exists())
 
     @app.post("/updates/check", response_class=HTMLResponse)
@@ -583,6 +598,7 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
             if url != f"https://github.com/zemerdon/filter-vision/releases/tag/{tag}":
                 raise ValueError("Unexpected release URL")
             app.state.latest = {"tag": tag, "url": url, "error": "",
+                                "notes": changelog_items(payload.get("body", "")),
                                 "is_newer": tuple(map(int, tag[1:].split("."))) >
                                             tuple(map(int, __version__.split(".")))}
         except (urllib.error.URLError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
@@ -596,7 +612,10 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
             return denial
         if not valid_csrf(sess, csrf):
             return invalid_csrf()
-        if not app.state.latest.get("is_newer"):
+        latest = app.state.latest.get("tag", "")
+        if (not re.fullmatch(r"v\d+\.\d+\.\d+", latest)
+                or tuple(map(int, latest[1:].split("."))) <=
+                   tuple(map(int, __version__.split(".")))):
             return HTMLResponse("Check for a newer stable release first", status_code=409)
         try:
             accepted = request_update(store.directory)
@@ -633,7 +652,26 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
         return render(request, "settings.html", active="settings", sess=sess,
                       cleaner=cleaner, approved_count=len(approved),
                       intervals=INTERVALS, last_scan=last_scan,
-                      failed_scans=failed_count)
+                      failed_scans=failed_count, activity_limit=store.activity_limit(),
+                      activity_options=ACTIVITY_LIMITS)
+
+    @app.post("/settings/activity", response_class=HTMLResponse)
+    def save_activity_settings(request: Request, csrf: str = Form(""),
+                               activity_limit: str = Form("")):
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        if not valid_csrf(sess, csrf):
+            return invalid_csrf()
+        if not activity_limit.isdecimal():
+            return HTMLResponse("Invalid Activity limit", status_code=400)
+        try:
+            store.set_activity_limit(int(activity_limit))
+        except ValueError:
+            return HTMLResponse("Unsupported Activity limit", status_code=400)
+        store.audit("activity_settings_changed",
+                    "activity_entries=" + str(activity_limit))
+        return RedirectResponse("/settings#activity-settings", status_code=303)
 
     @app.post("/settings/cleaner", response_class=HTMLResponse)
     def cleaner_control(request: Request, csrf: str = Form(""),
