@@ -1,51 +1,197 @@
-# Filter Vision
+<div align="center">
 
-**Filter Vision** is a self-hosted email spam analysis and filtering application. It provides an HTTPS administration WebUI, Microsoft browser OAuth2/PKCE sign-in, read-only Junk previews, exact-header spam filtering, scan history and protected cleaner scheduling.
+# 🛡️ Filter Vision
 
-## Install — Proxmox VE
+### Your email. Your rules. Your server.
 
-Run **one command as root on your Proxmox VE host**:
+A self-hosted email analysis and Junk-filtering console for Proxmox, built around precise rules and cautious mailbox operations.
+
+[![Latest stable release](https://img.shields.io/github/v/release/zemerdon/filter-vision?label=stable%20release&color=20b8b0)](https://github.com/zemerdon/filter-vision/releases/latest)
+![Platform](https://img.shields.io/badge/platform-Proxmox%20VE-E57000)
+![Guest](https://img.shields.io/badge/guest-Debian%2013-2878b8)
+![Updates](https://img.shields.io/badge/updates-stable%20only-5967b4)
+
+[**Install**](#-installation) · [**Features**](#-features) · [**WebUI**](#-webui) · [**Safety**](#-security--deletion-safety) · [**Releases**](https://github.com/zemerdon/filter-vision/releases) · [**Issues**](https://github.com/zemerdon/filter-vision/issues)
+
+</div>
+
+---
+
+## What is Filter Vision?
+
+Filter Vision is a standalone, self-hosted application for examining suspicious email, reviewing filtering rules, and managing a conservative scheduled Junk-mail cleaner.
+
+It combines a compact, responsive dark-themed HTTPS WebUI with native Debian services. Account connections, filter rules, schedules and audit records remain under your control.
+
+**Current focus:** Microsoft Outlook / Hotmail consumer accounts, using OAuth2 and exact-header legacy-compatible filtering. More providers and more flexible rule activation are planned, not advertised as working today.
+
+## 🚀 Installation
+
+**This is the only supported public installation entry point.** Run the following **as root on a Proxmox VE host**, not inside an existing container:
 
     bash -c "$(curl -fsSL https://github.com/zemerdon/filter-vision/releases/latest/download/install-proxmox.sh)"
 
-This is the **only supported public installation entry point**. It creates a **new Debian 13 unprivileged LXC** and installs the latest **stable** release of Filter Vision. It does not overwrite an existing container, and no Docker or develop channel is used.
+The one-liner opens a Media Vision-style terminal installer:
 
-The installer follows Media Vision's familiar menus: **Default Install**, **Advanced Install**, **User Defaults**, and **Settings**. Advanced options include Proxmox storage, bridge, DHCP/static IPv4, gateway, DNS, VLAN, timezone and optional root SSH (disabled by default). Whiptail must be available on the Proxmox host for the interactive menus.
-
-### Installation defaults
-
-| Option | Default |
+| Menu | Purpose |
 | --- | --- |
-| Debian | 13, x86_64, unprivileged LXC |
-| CPU | 2 vCPU |
-| Memory | 2048 MiB |
-| Root disk | 16 GiB |
+| **Default Install** | Create a new LXC with recommended defaults |
+| **Advanced Install** | Select storage, networking, resources, timezone and optional root SSH |
+| **User Defaults** | Review the proposed setup |
+| **Settings** | Adjust installer defaults |
+
+### Default configuration
+
+| Setting | Default |
+| --- | --- |
+| Platform | Proxmox VE, x86_64 |
+| Container | New **unprivileged Debian 13 LXC** |
+| CPU | **2 vCPU** |
+| RAM | **2048 MiB** |
 | Swap | 512 MiB |
-| Networking | DHCP, host-selected bridge |
+| Root disk | **16 GiB** |
+| Network | DHCP on a Proxmox bridge |
 | Timezone | Australia/Brisbane |
-| WebUI | HTTPS, port **9494** |
-| GitHub update channel | **Stable only** |
-| Root SSH | Disabled |
-| Account connections / live mail deletion | **Disabled on new installs** |
+| Root SSH password login | Disabled |
+| WebUI | **HTTPS, port 9494** |
+| Update channel | GitHub **stable** releases only |
+| Connected mailboxes / active deletion | **None / disabled** |
 
-After installation, the installer prints the new container's IP address and HTTPS address on port 9494. The initial certificate is self-signed, so a browser certificate warning is expected.
+**Prerequisites:** Proxmox VE with an available bridge and suitable storage, Python 3 on the host, the Whiptail terminal menu package, and outbound access to GitHub and Debian package mirrors. The installer can obtain the Debian 13 container template using Proxmox tools.
 
-**Security:** The passwordless WebUI is intended only for trusted internal networks. Keep port 9494 off the public internet. Live message deletion remains separately approved and limited to explicitly authorized account/rule policies. Expunged mail cannot be restored by an application backup.
+The script checks for an unused cluster-wide VMID, validates storage and networking, and verifies the versioned application archive's SHA256 **before** creating the container. It never overwrites an existing CT. If installation fails after creating a new container, that new CT is retained for troubleshooting rather than automatically destroyed.
 
-The installer pins an official stable release, checks its application-archive SHA256, extracts its **internal** guest bootstrap, creates a new CT only after validation and verifies HTTPS health. A newly created CT is retained for diagnosis on installation failure instead of being deleted.
+### When installation finishes
 
-### Updates and maintenance
+The installer prints the new container's IP address. Open the WebUI at an address of this form:
 
-Subsequent updates use the built-in **Updates** page in Filter Vision's WebUI. The versioned archive includes the internal native guest setup required for provisioning and updates; **there is no separate public existing-LXC installation command**.
+    https://YOUR-LXC-IP:9494/
 
-A fresh Proxmox CT has been covered by automated simulated Proxmox tests, but an actual on-host new-CT installation remains to be verified. Release notes and versions are available under [GitHub Releases](https://github.com/zemerdon/filter-vision/releases).
+The first certificate is self-signed; an initial browser warning is expected. Restrict access to your trusted internal network.
 
-## Existing core features
+**New installs do not connect accounts, approve rules or start permanent deletion.** Follow the [Getting started](#-getting-started) section to connect a mailbox.
 
-- Microsoft OAuth2 authorization with browser PKCE; encrypted account tokens.
-- Read-only Junk previews and conservative reviewed legacy-header rules.
-- Root-approved UID-specific STORE/EXPUNGE filtering with UIDPLUS safety checks.
-- Cleaner service status, configurable scan intervals and controlled Start, Stop, Restart and Run Now.
-- SQLite audit activity, HTTPS/CSRF protection, encrypted full-state recovery and stable GitHub updates.
+> **Installation test status:** release assets, archive checksums and mocked Proxmox provisioning have been verified. A real new-LXC installation on a Proxmox node has not yet completed end-to-end acceptance testing.
 
-**Project policy:** private mail contents, credentials, OAuth keys, protected recovery archives and internal project documents never belong in the public GitHub repository.
+## ✨ Features
+
+| Capability | Available today |
+| --- | --- |
+| **Private WebUI** | Responsive dark console, served over HTTPS |
+| **Microsoft OAuth2** | Browser authorization-code + PKCE for Outlook/Hotmail; encrypted token vault |
+| **Junk preview** | Read-only IMAP inspection before live filtering |
+| **Email analyzer** | Analyze uploaded .eml samples and suggest narrow header fingerprints |
+| **Rule drafts** | Save candidate rules without enabling deletion |
+| **Legacy-compatible cleaner** | Exact-header matches for separately authorized Microsoft accounts |
+| **Targeted deletion** | Requires IMAP UIDPLUS; UID-specific STORE/EXPUNGE rather than blanket expunge |
+| **Schedule controls** | Status, last/next run, adjustable 5-minute to 24-hour interval |
+| **Service controls** | Start, Stop and Restart Schedule; confirmed Run Now |
+| **Activity** | SQLite audit records and recent scan summaries |
+| **Updates** | In-app GitHub stable release check and application |
+| **Recovery** | Encrypted full-state backup and verified staging restore through protected server tooling |
+
+### Designed to avoid false positives
+
+Filter Vision does **not** treat a suspicious message as permission to delete it.
+
+- Uploaded message analysis suggests rules; it does not activate them.
+- Saved drafts remain disabled until independently reviewed and approved.
+- Connecting Microsoft does not automatically start deletion.
+- Live filtering requires protected account-and-rule approval.
+- The worker checks the Junk folder, UID validity, message headers and UIDPLUS capabilities before deleting an approved match.
+- Required safety checks fail closed rather than falling back to a mailbox-wide EXPUNGE.
+
+**A permanently expunged message cannot be restored by an application backup.**
+
+## 🖥️ WebUI
+
+Filter Vision has seven main pages:
+
+| Page | What it shows or does |
+| --- | --- |
+| **Dashboard** | Account and rule totals, cleaner status and shortcuts |
+| **Accounts** | Microsoft connect/reauthorize, account drafts and read-only Junk preview |
+| **Analyze Email** | Upload .eml files, compare header candidates and save disabled rule drafts |
+| **Rules** | Review stored signatures, root-approved legacy rules and draft status |
+| **Activity** | Recent administrative events and cleaner scan summaries |
+| **Updates** | Check for and apply a verified GitHub stable release |
+| **Settings** | Real service/timer status, scheduling, Start/Stop/Restart and confirmed Run Now |
+
+The current .eml analyzer accepts **up to 20 files**, **2 MiB per file**, **10 MiB total**; it does not automatically activate filtering.
+
+**History limitation:** Activity currently shows the latest 50 audit events with aggregate scan information and Unix timestamps. Searchable per-message rule-match history, friendly timestamps, exports and retention controls are planned.
+
+## 🔗 Getting started
+
+1. **Install** with the Proxmox one-liner and open the HTTPS WebUI.
+2. Under **Accounts**, create an Outlook/Hotmail account draft. Gmail and generic IMAP are not yet live connectors.
+3. **Configure a Microsoft OAuth client** for each mailbox. The current implementation expects an existing Microsoft client configuration in the protected server file at **/etc/filter-vision/oauth-clients.json**. The installer does not create this for you automatically.
+4. Choose **Connect Microsoft**. Sign in through the browser authorization-code + PKCE flow.
+5. The current redirect points at a registered **localhost** URL. The browser may show an unreachable page; copy the full callback URL from the address bar and paste it **only into the Filter Vision authorization form**. Never share callback URLs, OAuth codes, tokens or client settings in issues or chat.
+6. Select **Test Junk (read-only)** to inspect the mailbox safely.
+7. Review rule drafts separately. Root-managed authorization is required for live deletion; fresh installations do **not** automatically enable it.
+
+An automatic HTTPS OAuth callback and broader self-service rule activation are future work.
+
+## ⚙️ Scheduling & service controls
+
+Once live cleaning has been explicitly authorized, **Settings → Cleaner Service** shows real systemd timer and worker status.
+
+- Intervals available: **5, 10, 15, 20, 30, 60, 120, 240, 360, 720 or 1440 minutes**.
+- **Stop Schedule** pauses future timer runs; it does not interrupt a scan already in progress.
+- **Start Schedule** resumes scheduled scanning; **Restart Schedule** restarts an active timer.
+- **Run Now** immediately executes the approved cleaner after an explicit permanent-deletion acknowledgement.
+
+These fixed controls do not offer general root command execution and do not bypass protected rule/account approval.
+
+## 🔒 Security & deletion safety
+
+**The WebUI is deliberately passwordless.** Anyone on an allowed network who can reach it can administer the application and request supported cleaner operations. It is intended for **trusted internal networks only**.
+
+- **Never expose TCP 9494 directly to the public internet** or via an unrestricted reverse proxy.
+- Review allowed source CIDRs and Host restrictions in **/etc/filter-vision/web.env**.
+- Use HTTPS, and replace the self-signed certificate if a trusted certificate is required.
+- Keep private mail, credentials, OAuth secrets and backup keys out of public repositories and issue attachments.
+- Preserve encrypted backups **and the separate recovery encryption key** before irreversible migration or rule changes.
+- Never run two destructive cleaners against the same mailbox concurrently.
+
+OAuth tokens are stored encrypted. The WebUI uses signed browser cookies, CSRF/Origin protections and a restricted privileged helper for service operations. None of these controls make a passwordless console appropriate for unrestricted internet access.
+
+## 🔄 Stable updates
+
+In the WebUI, open **Updates → Check for updates**, then **Apply** when a newer stable release is available.
+
+There is **no develop update channel**. The updater checks verified release assets, takes a database snapshot, installs the new version and verifies service health. A rollback is attempted on failure, but full update-failure injection testing remains on the roadmap. Maintain your own protected encrypted backups.
+
+[**View stable releases and changelogs**](https://github.com/zemerdon/filter-vision/releases)
+
+## 🧱 Technology
+
+- **Runtime:** native Debian 13 unprivileged LXC on Proxmox
+- **Application:** Python, FastAPI, Uvicorn and Jinja2
+- **Storage:** SQLite and protected local account/token files
+- **Services:** systemd-managed HTTPS WebUI, cleaner timer and stable updater
+- **Mail:** TLS IMAP and Microsoft OAuth2/XOAUTH2
+- **Frontend:** responsive HTML/CSS; **no Docker dependency**
+
+## 🚧 Current status & roadmap
+
+Filter Vision is an **early stable release** with a working Microsoft-focused legacy-compatible cleaner. It is **not yet a general-purpose multi-provider spam filtering engine**.
+
+Planned improvements include searchable privacy-aware history, detailed rule-match/deletion auditing, scan health alerts, reviewed per-account/per-rule activation, more email providers, automatic Microsoft callback handling, in-page recovery controls and real Proxmox field-install acceptance.
+
+## 💬 Feedback
+
+Bug reports and ideas are welcome in [**GitHub Issues**](https://github.com/zemerdon/filter-vision/issues). Include the Filter Vision version, affected page, expected result and **sanitized** diagnostics. Do not attach message contents, OAuth callback URLs, tokens, recovery keys or unredacted logs.
+
+Follow the [**stable releases**](https://github.com/zemerdon/filter-vision/releases) for updates.
+
+---
+
+<div align="center">
+
+**Filter Vision** · Self-hosted email analysis and cautious filtering
+
+*One Proxmox installation method. One stable update channel. Your mail stays on your server.*
+
+</div>
