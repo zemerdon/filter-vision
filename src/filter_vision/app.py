@@ -29,6 +29,10 @@ from fastapi.templating import Jinja2Templates
 
 from . import __version__
 from .analysis import MAX_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES, inspect_eml, suggestions, validate_rule
+from .rule_management import (
+    RULE_DEFINITIONS, DRAFT_KINDS, RuleManagementError, draft_guard,
+    update_draft, duplicate_draft, delete_draft,
+)
 from .storage import Store, ACTIVITY_LIMITS
 from .history import report as history_report
 from .release_notes import changelog_items
@@ -37,6 +41,9 @@ from .oauth import (TokenVault, OAuthError, start_device_auth, poll_device_auth,
                     verify_imap_auth, access_token_for,
                     start_browser_auth, redeem_browser_auth)
 from .preview import scan_junk_preview, PreviewError
+from .junk_browse import list_junk, fetch_selected, BrowseError, MAX_SELECTED
+from .analysis_session import AnalysisMemory
+from .manual_eval import evaluate, FIELD_OPTIONS, OPERATORS
 from .live import load_policy, LiveSafetyError
 from .control import (control_view, request_control, ControlError,
                       INTERVALS, ACTIONS, service_status)
@@ -99,6 +106,7 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
     # One-use, browser-bound status only. Never store callback URLs or codes.
     app.state.oauth_feedback = {}
     app.state.previews = {}
+    app.state.analysis_memory = AnalysisMemory()
     app.state.oauth_lock = threading.RLock()
     app.state.token_vault = TokenVault(store.directory)
     trusted = tuple(ipaddress.ip_network(c.strip(), strict=False) for c in
@@ -475,12 +483,33 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
                     f"truncated={result['truncated']}")
         return RedirectResponse("/accounts", status_code=303)
 
+    def connected_junk_accounts() -> list[dict]:
+        """Only already-authorized, properly configured Microsoft Junk accounts."""
+        with store.db() as con:
+            rows = [dict(x) for x in con.execute(
+                "SELECT id,label,provider,host,port,username,folder FROM accounts "
+                "WHERE provider='outlook' AND host='outlook.office365.com' "
+                "AND port=993 AND folder='Junk' ORDER BY id")]
+        return [row for row in rows if app.state.token_vault.connected(row["id"])][:8]
+
+    def analyze_page(request: Request, sess: dict, *, error=None,
+                     manual_report=None, manual_input=None, status=200):
+        state = app.state.analysis_memory.read(sess["csrf"])
+        samples = state["samples"]
+        return render(request, "analyze.html", active="analyze", sess=sess,
+                      samples=samples, suggestions=suggestions(samples) if samples else [],
+                      catalog=state["catalog"], catalog_scanned=state["catalog_scanned"],
+                      connected_accounts=connected_junk_accounts(),
+                      manual_fields=FIELD_OPTIONS, manual_operators=OPERATORS,
+                      manual_report=manual_report, manual_input=manual_input or {},
+                      error=error, status=status)
+
     @app.get("/analyze", response_class=HTMLResponse)
     def analyze(request: Request):
         sess, denial = guard(request)
         if denial:
             return denial
-        return render(request, "analyze.html", active="analyze", sess=sess, samples=[], suggestions=[])
+        return analyze_page(request, sess)
 
     @app.post("/analyze", response_class=HTMLResponse)
     async def analyze_post(request: Request, csrf: str = Form(""),
@@ -504,10 +533,111 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
                     chunks.append(chunk)
                 samples.append(inspect_eml(item.filename or "", b"".join(chunks)))
         except ValueError as exc:
-            return render(request, "analyze.html", active="analyze", sess=sess, samples=[],
-                          suggestions=[], error=str(exc), status=400)
-        return render(request, "analyze.html", active="analyze", sess=sess,
-                      samples=samples, suggestions=suggestions(samples))
+            return analyze_page(request, sess, error=str(exc), status=400)
+        app.state.analysis_memory.write(sess["csrf"], samples=samples)
+        store.audit("analyze_uploaded", f"count={len(samples)}")
+        return analyze_page(request, sess)
+
+    @app.post("/analyze/junk/scan", response_class=HTMLResponse)
+    def scan_junk_for_analysis(request: Request, csrf: str = Form("")):
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        if not valid_csrf(sess, csrf):
+            return invalid_csrf()
+        accounts = connected_junk_accounts()
+        if not accounts:
+            return analyze_page(request, sess,
+                                error="Connect a Microsoft Outlook/Hotmail account first",
+                                status=409)
+        catalog = []
+        failures = 0
+        for account in accounts:
+            try:
+                token = access_token_for(
+                    account["id"], account["username"], app.state.token_vault)
+                catalog.extend(list_junk(account, token))
+            except (OAuthError, BrowseError):
+                failures += 1
+        app.state.analysis_memory.write(
+            sess["csrf"], catalog=catalog, samples=[], catalog_scanned=True)
+        store.audit("analyze_junk_scanned",
+                    f"accounts={len(accounts)} listed={len(catalog)} failed={failures}")
+        if failures:
+            return analyze_page(request, sess,
+                                error=f"{failures} Junk folder(s) could not be read. "
+                                      "Reconnect an affected Microsoft account and scan again.",
+                                status=502 if not catalog else 200)
+        return analyze_page(request, sess)
+
+    @app.post("/analyze/junk/select", response_class=HTMLResponse)
+    def analyze_selected_junk(request: Request, csrf: str = Form(""),
+                              selected: list[str] = Form([])):
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        if not valid_csrf(sess, csrf):
+            return invalid_csrf()
+        if not 1 <= len(selected) <= MAX_SELECTED or len(set(selected)) != len(selected):
+            return analyze_page(request, sess, error="Select 1–20 distinct Junk messages",
+                                status=400)
+        catalog = app.state.analysis_memory.read(sess["csrf"])["catalog"]
+        choices = {row["ref"]: row for row in catalog}
+        if any(ref not in choices for ref in selected):
+            return analyze_page(request, sess, error="Selection expired. Scan Junk again.",
+                                status=410)
+        connected = {row["id"]: row for row in connected_junk_accounts()}
+        buckets: dict[int, list[dict]] = {}
+        for ref in selected:
+            row = choices[ref]
+            if row["account_id"] not in connected:
+                return analyze_page(request, sess,
+                                    error="Connected account changed. Scan Junk again.",
+                                    status=409)
+            buckets.setdefault(row["account_id"], []).append(row)
+        samples = []
+        try:
+            for account_id, items in buckets.items():
+                account = connected[account_id]
+                token = access_token_for(
+                    account_id, account["username"], app.state.token_vault)
+                batch = fetch_selected(account, items, token,
+                                       remaining_budget=MAX_TOTAL_BYTES -
+                                       sum(sample.get("_analysis_size", 0)
+                                           for sample in samples))
+                samples.extend(batch)
+        except (BrowseError, OAuthError, ValueError):
+            return analyze_page(request, sess,
+                                error="Read-only selection failed or messages changed. "
+                                      "Scan Junk and select again.", status=409)
+        for sample in samples:
+            sample.pop("_analysis_size", None)
+        app.state.analysis_memory.write(sess["csrf"], samples=samples)
+        store.audit("analyze_junk_selected",
+                    f"count={len(samples)} accounts={len(buckets)}")
+        return analyze_page(request, sess)
+
+    @app.post("/analyze/manual", response_class=HTMLResponse)
+    def evaluate_manual(request: Request, csrf: str = Form(""),
+                        field: str = Form("from_domain"),
+                        operator: str = Form("wildcard"),
+                        value: str = Form(""), header_name: str = Form("")):
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        if not valid_csrf(sess, csrf):
+            return invalid_csrf()
+        state = app.state.analysis_memory.read(sess["csrf"])
+        inputs = {"field": field, "operator": operator,
+                  "value": value, "header_name": header_name}
+        try:
+            result = evaluate(state["samples"], field, operator, value, header_name)
+        except ValueError as error:
+            return analyze_page(request, sess, error=str(error),
+                                manual_input=inputs, status=400)
+        store.audit("analyze_manual_evaluated",
+                    f"sample_count={result['total']} matched={result['count']}")
+        return analyze_page(request, sess, manual_report=result, manual_input=inputs)
 
     @app.post("/rules", response_class=HTMLResponse)
     def rule_add(request: Request, csrf: str = Form(""), kind: str = Form(""),
@@ -535,11 +665,80 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
             return denial
         with store.db() as con:
             rules = [dict(x) for x in con.execute("SELECT * FROM rules ORDER BY id DESC")]
+            scope_ids = {r[0] for r in con.execute("SELECT DISTINCT rule_id FROM rule_scopes")}
         approved = live_account_ids()
         approved_ids = ({r["id"] for r in rules if r["kind"] == "legacy_raw_header"}
                         if approved else set())
         return render(request, "rules.html", active="rules", sess=sess,
-                      rules=rules, approved_ids=approved_ids)
+                      rules=rules, approved_ids=approved_ids,
+                      editable_ids={r["id"] for r in rules if
+                                    r["kind"] != "legacy_raw_header"
+                                    and r["enabled"] == 0 and r["action"] == "draft"
+                                    and r["kind"] in DRAFT_KINDS
+                                    and r["id"] not in scope_ids})
+
+    @app.get("/rules/{rule_id}/edit", response_class=HTMLResponse)
+    def edit_draft_form(request: Request, rule_id: int):
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        try:
+            with store.db() as con:
+                rule = draft_guard(con, rule_id)
+        except RuleManagementError as error:
+            return HTMLResponse(str(error), status_code=error.status_code)
+        current_code = f"{rule['kind']}:{rule['field']}"
+        if current_code not in {f"{k}:{f}" for k, f, _ in RULE_DEFINITIONS}:
+            # Older drafts can use lowercase/noncanonical header casing.
+            current_code = next(
+                f"{k}:{f}" for k, f, _ in RULE_DEFINITIONS if k == rule["kind"])
+        return render(request, "rule_edit.html", active="rules", sess=sess,
+                      rule=rule, definitions=RULE_DEFINITIONS,
+                      selected_definition=current_code)
+
+    @app.post("/rules/{rule_id}/edit", response_class=HTMLResponse)
+    def save_edited_draft(request: Request, rule_id: int, csrf: str = Form(""),
+                          definition: str = Form(""), value: str = Form(""),
+                          label: str = Form("")):
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        if not valid_csrf(sess, csrf):
+            return invalid_csrf()
+        try:
+            update_draft(store, rule_id, definition, value, label)
+        except RuleManagementError as error:
+            return HTMLResponse(str(error), status_code=error.status_code)
+        return RedirectResponse("/rules", status_code=303)
+
+    @app.post("/rules/{rule_id}/duplicate", response_class=HTMLResponse)
+    def copy_draft(request: Request, rule_id: int, csrf: str = Form("")):
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        if not valid_csrf(sess, csrf):
+            return invalid_csrf()
+        try:
+            new_id = duplicate_draft(store, rule_id)
+        except RuleManagementError as error:
+            return HTMLResponse(str(error), status_code=error.status_code)
+        return RedirectResponse(f"/rules/{new_id}/edit", status_code=303)
+
+    @app.post("/rules/{rule_id}/delete", response_class=HTMLResponse)
+    def remove_draft(request: Request, rule_id: int, csrf: str = Form(""),
+                     confirm: str = Form("")):
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        if not valid_csrf(sess, csrf):
+            return invalid_csrf()
+        if confirm != "delete":
+            return HTMLResponse("Confirm removal of this disabled draft", status_code=400)
+        try:
+            delete_draft(store, rule_id)
+        except RuleManagementError as error:
+            return HTMLResponse(str(error), status_code=error.status_code)
+        return RedirectResponse("/rules", status_code=303)
 
     @app.get("/activity", response_class=HTMLResponse)
     def activity(request: Request):

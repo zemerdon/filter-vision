@@ -157,6 +157,16 @@ def test_live_account_requires_exact_import_approved_digest_and_scopes(tmp_path,
     repeat=run_live_account(store,1,connector=LiveIMAP,
                             policy_path=policy,marker=marker,require_root=False)
     assert repeat["deleted"] == 1
+    # Editing/duplicating/deleting a non-approved draft must not alter
+    # the frozen 22 root-authorized signature checksum or cleaner behavior.
+    from filter_vision.rule_management import update_draft, duplicate_draft, delete_draft
+    update_draft(store,23,"header_exact:X-Relaying-Domain",
+                 "vendor.example.invalid","Reviewed inactive candidate")
+    copied_id=duplicate_draft(store,23)
+    delete_draft(store,copied_id)
+    after_edits=run_live_account(store,1,connector=LiveIMAP,
+                                 policy_path=policy,marker=marker,require_root=False)
+    assert after_edits["deleted"] == 1
     # The extra draft must NOT be allowed into the protected scope.
     with store.db() as c:
         c.execute("INSERT INTO rule_scopes(rule_id,account_id) VALUES(23,1)")

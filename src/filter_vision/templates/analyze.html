@@ -1,32 +1,230 @@
 {% extends "base.html" %}
 {% block title %}Analyze email{% endblock %}
+{% macro candidate_row(c, samples, csrf) %}
+<tr>
+  <td>
+    <strong>{{ "Shared click destination" if c.kind == "click_destination" else "Shared domain ending" if c.kind == "sender_suffix_evidence" else c.kind.replace('_',' ')|title }}</strong>
+    {% if c.kind == "click_destination" %}
+      <p class="muted small">BODY EVIDENCE · NOT A LIVE RULE</p>
+    {% elif c.kind == "sender_suffix_evidence" %}
+      <p class="muted small">DOMAIN-ENDING HYPOTHESIS · NOT A LIVE RULE</p>
+    {% endif %}
+  </td>
+  <td>
+    <span class="mono muted small">{{ c.field }}</span>
+    <div class="value-cell">{{ c.value }}</div>
+  </td>
+  <td>
+    <strong>{{ c.count }}/{{ c.total }}</strong>
+    <details class="candidate-evidence">
+      <summary>View matching messages</summary>
+      <ul>
+        {% for i in c.sample_ids %}
+        <li>{{ samples[i].subject or samples[i].filename or 'Untitled sample' }}</li>
+        {% endfor %}
+      </ul>
+    </details>
+  </td>
+  <td><span class="pill">{{ c.risk }}</span><p class="muted small">{{ c.explanation }}</p></td>
+  <td>
+  {% if c.can_save %}
+    <form method="post" action="/rules">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="kind" value="{{ c.kind }}">
+      <input type="hidden" name="field" value="{{ c.field }}">
+      <input type="hidden" name="value" value="{{ c.value }}">
+      <button class="btn small-btn" type="submit">Save disabled draft</button>
+    </form>
+  {% else %}
+    <span class="muted small">Analysis only</span>
+  {% endif %}
+  </td>
+</tr>
+{% endmacro %}
 {% block content %}
-<div class="heading"><div><p class="eyebrow">SPAM INTELLIGENCE</p><h1>Analyze Email</h1><p class="muted">Find useful header fingerprints without opening links or executing attachments.</p></div></div>
-<div class="panel"><h2>Upload .eml samples</h2><p class="muted">Choose 1–20 messages. Maximum 2 MiB per file, 10 MiB total. Uploaded message bodies are never saved.</p>
-<form method="post" action="/analyze" enctype="multipart/form-data" class="upload-form">
-<input type="hidden" name="csrf" value="{{ csrf }}">
-<input type="file" name="files" accept=".eml,message/rfc822" multiple required>
-<button class="btn primary" type="submit">Analyze selected files</button>
-</form>
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<div class="heading">
+  <div><p class="eyebrow">SPAM INTELLIGENCE</p>
+    <h1>Analyze Email</h1>
+    <p class="muted">Compare campaign evidence across messages without opening links, loading images or executing attachments.</p>
+  </div>
 </div>
+<div class="panel" id="connected-junk">
+  <h2>Scan connected Junk folders</h2>
+  <p class="muted">Read the most recent 40 Junk messages per connected Microsoft account.
+    View subjects and senders, choose up to 20 messages, then compare their headers and campaign evidence.
+    Scanning uses read-only IMAP and never marks, moves or deletes an email.</p>
+  {% if connected_accounts %}
+  <div class="connected-account-pills">
+    {% for account in connected_accounts %}
+      <span class="pill">{{ account.label }}</span>
+    {% endfor %}
+  </div>
+  <form method="post" action="/analyze/junk/scan" class="analyze-toolbar">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button class="btn primary" type="submit">Scan Junk folders (read-only)</button>
+    <span class="muted small">{{ connected_accounts|length }} connected Microsoft account{{ "s" if connected_accounts|length != 1 else "" }}</span>
+  </form>
+  {% else %}
+    <p class="muted">No configured Microsoft Junk account is connected yet.
+      <a href="/accounts">Connect an account</a>, or upload .eml files below.</p>
+  {% endif %}
+  {% if catalog %}
+    <h3>Messages found <span class="pill">{{ catalog|length }}</span></h3>
+    <p class="muted small">Select the messages you want to evaluate (up to 20 across both accounts).
+      Reopening or rescanning Junk refreshes the available messages; mailbox UID identity is rechecked before analysis.</p>
+    <form method="post" action="/analyze/junk/select">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <div class="table-wrap">
+        <table class="junk-browser-table">
+          <thead><tr><th>Select</th><th>Account</th><th>From</th><th>Subject</th><th>Date</th></tr></thead>
+          <tbody>{% for item in catalog %}
+            <tr>
+              <td><label class="junk-checkbox">
+                <input type="checkbox" name="selected" value="{{ item.ref }}">
+                <span class="muted small">Choose</span>
+              </label></td>
+              <td>{{ item.account_label }}</td>
+              <td class="value-cell">{{ item.sender or "Unknown" }}</td>
+              <td>{{ item.subject or "(No subject)" }}</td>
+              <td class="muted small">{{ item.date or "—" }}</td>
+            </tr>
+          {% endfor %}</tbody>
+        </table>
+      </div>
+      <div class="analyze-toolbar">
+        <button class="btn primary" type="submit">Analyze selected Junk emails</button>
+        <span class="muted small">Up to 20 messages · 10 MiB total</span>
+      </div>
+    </form>
+  {% elif catalog_scanned %}
+    <p class="empty">No emails found in the connected Junk folders.
+      You can rescan later or upload .eml files below.</p>
+  {% endif %}
+</div>
+<details class="panel analyze-upload-alt">
+  <summary>Or upload .eml files manually</summary>
+  <p class="muted">Choose 1–20 messages. Maximum 2 MiB per file, 10 MiB total. Headers and bounded HTML click destinations are examined locally; message bodies and full URLs are never saved.</p>
+  <form method="post" action="/analyze" enctype="multipart/form-data" class="upload-form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="file" name="files" accept=".eml,message/rfc822" multiple required>
+    <button class="btn primary" type="submit">Analyze selected files</button>
+  </form>
+</details>
+{% if error %}<div class="panel"><p class="error">{{ error }}</p></div>{% endif %}
 {% if samples %}
-<div class="panel"><h2>Messages analysed <span class="pill">{{ samples|length }}</span></h2>
-<div class="table-wrap"><table><thead><tr><th>File</th><th>Sender</th><th>Subject</th></tr></thead><tbody>
-{% for s in samples %}<tr><td>{{ s.filename }}</td><td>{{ s.sender or 'Unknown' }}</td><td>{{ s.subject or 'No subject' }}</td></tr>{% endfor %}
-</tbody></table></div></div>
-<div class="panel"><h2>Suggested rules <span class="pill">{{ suggestions|length }}</span></h2>
-<p class="muted">Coverage counts refer <strong>only to these uploaded samples</strong>, not your live inbox. A matching candidate is not proof that a rule is safe.</p>
-{% if suggestions %}<div class="table-wrap"><table><thead><tr><th>Method</th><th>Field / fingerprint</th><th>Coverage</th><th>Review</th><th>Action</th></tr></thead><tbody>
-{% for c in suggestions %}
-<tr><td>{{ c.kind.replace('_',' ')|title }}</td><td><span class="mono muted small">{{ c.field }}</span><br><span class="value-cell">{{ c.value }}</span></td><td>{{ c.count }}/{{ c.total }}</td><td><span class="pill">{{ c.risk }}</span></td>
-<td><form method="post" action="/rules">
-<input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="{{ c.kind }}"><input type="hidden" name="field" value="{{ c.field }}"><input type="hidden" name="value" value="{{ c.value }}">
-<button class="btn small-btn" type="submit">Save draft</button>
-</form></td>
-</tr>{% endfor %}
-</tbody></table></div>{% else %}<p class="empty">No suitable narrow candidate found.</p>{% endif %}
+<div class="panel">
+  <h2>Messages analysed <span class="pill">{{ samples|length }}</span></h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>File</th><th>Sender</th><th>Subject</th></tr></thead>
+      <tbody>{% for s in samples %}
+      <tr><td>{{ s.filename }}</td><td>{{ s.sender or 'Unknown' }}</td><td>{{ s.subject or 'No subject' }}</td></tr>
+      {% endfor %}</tbody>
+    </table>
+  </div>
 </div>
+<details class="panel manual-evaluation" open id="manual-evaluate">
+  <summary>Manual evaluation — test your own header or pattern</summary>
+  <p class="muted">Choose a field, enter your own exact text or wildcard, and select Evaluate.
+    This uses the {{ samples|length }} messages already selected or uploaded. No additional upload is needed.
+    Nothing is saved as a rule, and no mailbox message is altered.
+    The temporary analysis selection expires after 15 minutes.</p>
+  <form method="post" action="/analyze/manual" class="manual-evaluate-form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="manual-field">Field
+      <select id="manual-field" name="field">
+        {% for code, name in manual_fields %}
+          <option value="{{ code }}" {% if manual_input.field == code or (not manual_input.field and code == "from_domain") %}selected{% endif %}>{{ name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label for="manual-operator">Comparison
+      <select id="manual-operator" name="operator">
+        {% for code, name in manual_operators %}
+          <option value="{{ code }}" {% if manual_input.operator == code or (not manual_input.operator and code == "wildcard") %}selected{% endif %}>{{ name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label for="manual-value">Your matching text or pattern
+      <input id="manual-value" type="text" name="value"
+             value="{{ manual_input.value or '' }}" maxlength="255"
+             placeholder="e.g. *hockey.com" autocomplete="off" required>
+    </label>
+    <label for="manual-header">Custom header name (only for Specific header)
+      <input id="manual-header" type="text" name="header_name"
+             value="{{ manual_input.header_name or '' }}" maxlength="80"
+             placeholder="e.g. X-Relaying-Domain" autocomplete="off">
+    </label>
+    <div><button type="submit" class="btn primary">Evaluate against selected emails</button></div>
+  </form>
+  {% if manual_report %}
+  <div class="manual-results" role="status">
+    <div class="manual-coverage">
+      <span class="muted">Coverage</span>
+      <strong>{{ manual_report.count }}/{{ manual_report.total }} matched</strong>
+      <span class="pill">{{ manual_report.total - manual_report.count }} missed</span>
+    </div>
+    <p class="muted small">Test: {{ manual_report.field_label }}{% if manual_report.header_name %} ({{ manual_report.header_name }}){% endif %} · {{ manual_report.operator_label }} · <strong>{{ manual_report.value }}</strong></p>
+    <p class="muted small">{{ manual_report.warning }}</p>
+    <div class="manual-outcome-grid">
+      <div class="manual-outcome">
+        <h3>Matched ({{ manual_report.matched|length }})</h3>
+        {% if manual_report.matched %}
+          <ul>{% for item in manual_report.matched %}
+          <li><strong>{{ item.subject }}</strong>
+            <span class="muted small">{{ item.account_label or item.filename }} · {{ item.sender }}</span></li>
+          {% endfor %}</ul>
+        {% else %}<p class="muted small">No selected messages matched.</p>{% endif %}
+      </div>
+      <div class="manual-outcome">
+        <h3>Missed ({{ manual_report.missed|length }})</h3>
+        {% if manual_report.missed %}
+          <ul>{% for item in manual_report.missed %}
+          <li><strong>{{ item.subject }}</strong>
+            <span class="muted small">{{ item.account_label or item.filename }} · {{ item.sender }}</span></li>
+          {% endfor %}</ul>
+        {% else %}<p class="muted small">Every selected message matched.</p>{% endif %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+</details>
+{% set shared = suggestions|selectattr('shared')|list %}
+{% set individual = suggestions|rejectattr('shared')|list %}
+<div class="panel">
+  <h2>Shared campaign evidence <span class="pill">{{ shared|length }}</span></h2>
+  <p class="muted">
+    Repeated across the selected or uploaded messages, sorted by coverage. These are <strong>patterns in this small sample only</strong>,
+    not evidence of a safe deletion rule. The live cleaner currently matches approved header signatures only;
+    HTML link destinations are <strong>analysis-only evidence</strong>.
+  </p>
+  {% if shared %}
+  <div class="table-wrap">
+    <table class="candidate-table">
+      <thead><tr><th>Signal</th><th>Field / fingerprint</th><th>Coverage</th><th>Assessment</th><th>Action</th></tr></thead>
+      <tbody>{% for c in shared %}{{ candidate_row(c,samples,csrf) }}{% endfor %}</tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">No repeatable narrow signal found across these samples. You can review individual alternatives below.</p>
+  {% endif %}
+</div>
+{% if individual %}
+<details class="panel single-candidates">
+  <summary>Individual-message alternatives ({{ individual|length }})</summary>
+  <p class="muted">These each cover only one uploaded email. Sender identities and subjects are easily rotated; they are not evidence of a common campaign.</p>
+  <div class="table-wrap">
+    <table class="candidate-table">
+      <thead><tr><th>Signal</th><th>Field / fingerprint</th><th>Coverage</th><th>Assessment</th><th>Action</th></tr></thead>
+      <tbody>{% for c in individual %}{{ candidate_row(c,samples,csrf) }}{% endfor %}</tbody>
+    </table>
+  </div>
+</details>
 {% endif %}
-<div class="info">Rule suggestions are review-only; saving a draft never enables filtering or deletes email.</div>
+{% endif %}
+<div class="info">
+  <strong>Safety:</strong> common SCL scores, SPF/DKIM authentication results, shared Google/Microsoft relay infrastructure,
+  image-hosting domains and generic subject phrases are not safe deletion rules. Saving a permitted candidate
+  creates an <strong>inactive, unscoped draft only</strong>. No live filtering or permanent deletion is enabled here.
+</div>
 {% endblock %}

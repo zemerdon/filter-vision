@@ -86,3 +86,74 @@ input,select,textarea{min-width:0;background:#0b161d;border:1px solid #37505b;pa
 .manual-run-form .run-confirm input{appearance:auto;width:17px;height:17px;min-width:17px;min-height:17px;padding:0;margin:0;flex:0 0 17px}
 @media(max-width:1000px){.activity-stats{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:680px){.activity-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.email-preview dl{grid-template-columns:1fr;gap:2px}.email-preview dt:not(:first-child){margin-top:6px}.manual-run-card{padding:13px}}
+
+/* Safe rule draft management; protected live signatures are never editable here. */
+.rules-table{min-width:850px}
+.rules-table .value-cell{max-width:285px}
+.rules-table .rule-tools{display:flex;gap:6px;align-items:flex-start;flex-wrap:wrap;min-width:255px}
+.rule-tools .btn{white-space:nowrap}
+.rule-tools .delete-draft-control{position:relative}
+.delete-draft-control>summary{list-style:none;user-select:none;cursor:pointer}
+.delete-draft-control>summary::-webkit-details-marker{display:none}
+.btn.danger-btn{border-color:#84555a;background:#382329;color:#f3c4c2}
+.delete-draft-form{margin-top:8px;background:#171f27;border:1px solid #84555a;border-radius:5px;padding:12px;min-width:260px;max-width:310px}
+.delete-draft-form p{margin:0 0 10px}
+.draft-delete-confirm{display:flex;gap:9px;align-items:center;margin:0 0 12px;line-height:1.5}
+.draft-delete-confirm input{appearance:auto;min-width:16px;width:16px;height:16px;margin:0}
+.rule-edit-panel{max-width:740px}
+.rule-edit-form{display:grid;gap:19px}
+.rule-edit-form>label{display:flex;flex-direction:column;gap:7px;color:#aec7d0}
+.rule-edit-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+@media(max-width:740px){
+  .rules-table-wrap{overflow:visible}
+  .rules-table{display:block;min-width:0;width:100%}
+  .rules-table thead{display:none}
+  .rules-table tbody{display:grid;gap:12px}
+  .rules-table tr{display:block;border:1px solid var(--line);border-radius:6px;background:#11202a;padding:10px 12px}
+  .rules-table td{display:flex;justify-content:space-between;gap:12px;min-width:0;max-width:none;padding:9px 0;text-align:right}
+  .rules-table td::before{content:attr(data-label);font-size:10px;letter-spacing:.7px;text-transform:uppercase;color:var(--muted);font-weight:600;flex:none;text-align:left}
+  .rules-table td:last-child{border-bottom:none}
+  .rules-table td.value-cell{overflow-wrap:anywhere;max-width:none}
+  .rules-table .rule-tools{justify-content:flex-end;min-width:0}
+  .delete-draft-form{min-width:0}
+}
+
+/* Analyzer: shared campaign evidence leads; weaker one-message rules are collapsed. */
+.candidate-table{min-width:910px}
+.candidate-table td{vertical-align:top}
+.candidate-table .value-cell{margin-top:4px}
+.candidate-table td p.small{margin:7px 0 0;max-width:260px;line-height:1.5}
+.candidate-evidence{margin-top:5px;font-size:11px}
+.candidate-evidence summary{color:var(--teal);cursor:pointer}
+.candidate-evidence ul{padding-left:16px;margin:8px 0;max-width:250px;overflow-wrap:anywhere}
+.candidate-evidence li{margin-bottom:5px}
+.single-candidates>summary{font-size:16px;font-weight:600;color:var(--text);cursor:pointer}
+.single-candidates[open]>summary{margin-bottom:13px}
+
+/* Read-only connected Junk browser and manual match evaluator. */
+.connected-account-pills{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+.analyze-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin:14px 0}
+.junk-browser-table{min-width:790px}
+.junk-browser-table td{vertical-align:top}
+.junk-browser-table td:nth-child(3),.junk-browser-table td:nth-child(4){max-width:295px;overflow-wrap:anywhere}
+.junk-checkbox{display:flex;gap:6px;align-items:center}
+.junk-checkbox input{appearance:auto;width:17px;height:17px;flex:0 0 17px;min-width:17px;padding:0;margin:0}
+.analyze-upload-alt>summary,.manual-evaluation>summary{font-size:16px;font-weight:650;cursor:pointer;color:var(--text)}
+.analyze-upload-alt[open]>summary,.manual-evaluation[open]>summary{margin-bottom:14px}
+.manual-evaluate-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px}
+.manual-evaluate-form label{display:flex;flex-direction:column;gap:8px;color:#adcbd1;min-width:0}
+.manual-evaluate-form label input,.manual-evaluate-form label select{max-width:100%;min-width:0}
+.manual-evaluate-form>div{grid-column:1/-1}
+.manual-results{margin-top:22px;border-top:1px solid var(--line);padding-top:18px}
+.manual-coverage{display:flex;align-items:center;gap:15px;flex-wrap:wrap;margin-bottom:10px}
+.manual-coverage strong{font-size:27px;color:var(--teal);font-variant-numeric:tabular-nums}
+.manual-outcome-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}
+.manual-outcome{padding:14px;background:#101f27;border:1px solid var(--line);border-radius:6px;min-width:0}
+.manual-outcome h3{margin:0 0 10px;font-size:14px}
+.manual-outcome ul{margin:0;padding-left:16px}
+.manual-outcome li{margin-bottom:12px;overflow-wrap:anywhere}
+.manual-outcome li span{display:block;margin-top:4px}
+@media(max-width:700px){
+  .manual-evaluate-form,.manual-outcome-grid{grid-template-columns:1fr}
+  .manual-evaluate-form>div{grid-column:auto}
+}

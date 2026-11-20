@@ -81,7 +81,7 @@ The first certificate is self-signed; an initial browser warning is expected. Re
 | **Microsoft OAuth2** | Browser authorization-code + PKCE for Outlook/Hotmail; encrypted token vault |
 | **Junk preview** | Read-only IMAP inspection before live filtering |
 | **Email analyzer** | Analyze uploaded .eml samples and suggest narrow header fingerprints |
-| **Rule drafts** | Save candidate rules without enabling deletion |
+| **Rule draft management** | Edit, duplicate and delete inactive unscoped drafts; imported root-approved rules remain protected |
 | **Legacy-compatible cleaner** | Exact-header matches for separately authorized Microsoft accounts |
 | **Targeted deletion** | Requires IMAP UIDPLUS; UID-specific STORE/EXPUNGE rather than blanket expunge |
 | **Schedule controls** | Status, last/next run, adjustable 5-minute to 24-hour interval |
@@ -97,7 +97,8 @@ The first certificate is self-signed; an initial browser warning is expected. Re
 Filter Vision does **not** treat a suspicious message as permission to delete it.
 
 - Uploaded message analysis suggests rules; it does not activate them.
-- Saved drafts remain disabled until independently reviewed and approved.
+- Drafts can be edited, duplicated or deleted, but remain disabled until independently reviewed and approved.
+- The original 22 root-approved legacy rules remain immutable in the WebUI; changing or retiring them requires a separately reviewed root-policy workflow.
 - Connecting Microsoft does not automatically start deletion.
 - Live filtering requires protected account-and-rule approval.
 - The worker checks the Junk folder, UID validity, message headers and UIDPLUS capabilities before deleting an approved match.
@@ -114,8 +115,8 @@ Filter Vision has seven main pages:
 | --- | --- |
 | **Dashboard** | Account and rule totals, cleaner status and shortcuts |
 | **Accounts** | Microsoft connect/reauthorize, account drafts and read-only Junk preview |
-| **Analyze Email** | Upload .eml files, compare header candidates and save disabled rule drafts |
-| **Rules** | Review stored signatures, root-approved legacy rules and draft status |
+| **Analyze Email** | Read-only scan connected Microsoft Junk folders or upload .eml samples; select emails, manually test headers and wildcards, view matched/missed results and save only inactive supported drafts |
+| **Rules** | Review protected original signatures; edit, duplicate and delete ordinary disabled drafts |
 | **Activity** | Scan and filtering statistics, per-rule effectiveness, readable server time and expandable text-only matched-message details |
 | **Updates** | Check/apply verified GitHub stable releases, read the in-app bullet changelog and see the actual running version |
 | **Settings** | Timer status, scan interval, Activity display length and cleaner Start/Stop/Restart with a clearly separated Run Now confirmation |
@@ -123,6 +124,14 @@ Filter Vision has seven main pages:
 The current .eml analyzer accepts **up to 20 files**, **2 MiB per file**, **10 MiB total**; it does not automatically activate filtering.
 
 **History and privacy:** Activity defaults to the newest 50 records, configurable to 25–500, and shows readable times in the **server's actual timezone**. Lifetime totals include older aggregate audit records, but per-rule email attribution and expandable encrypted message previews are available **only for future matches logged since v0.2.4**; email previously deleted cannot be reconstructed. The preview retains only bounded safe text, not attachments, scripts or raw HTML. Searchable history, exports and retention controls remain planned.
+
+## Read-only Junk analysis and manual evaluation
+
+On Analyze Email, select **Scan Junk folders** to list the latest 40 Junk messages from each connected Microsoft account. Choose up to 20 messages across accounts, then select **Analyze selected Junk emails**. You can still upload .eml samples instead.
+
+Switch to **Manual evaluation** and choose a field (From address/domain, Subject, Reply-To, Return-Path, a named header, any header or HTML clickable destination) and a comparison (exact, contains, starts with, ends with or literal * wildcard). A pattern such as *hockey.com can show 2/4 matched and the exact matched and missed messages. It is read-only, never enables deletion and does not save a rule. Broad patterns can match legitimate mail.
+
+Selection evidence is kept temporarily in server RAM for at most 15 minutes, not saved as copies of email in SQLite. The live cleaner remains restricted to separately root-approved signatures.
 
 ## 🔗 Getting started
 
