@@ -93,7 +93,10 @@ tag=str(d.get("tag_name",""))
 if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+",tag):raise SystemExit("Invalid stable release version")
 if d.get("draft") or d.get("prerelease"):raise SystemExit("Only stable releases are supported")
 if d.get("target_commitish") != "stable":raise SystemExit("Release is not published from stable")
-names=["install.sh",f"filter-vision-{tag}.tar.gz",f"filter-vision-{tag}.sha256"]
+# Stable update integrity covers the archive and its checksum manifest.
+# Guest bootstrap is extracted from the verified archive, not fetched
+# from a second public installer download.
+names=[f"filter-vision-{tag}.tar.gz",f"filter-vision-{tag}.sha256"]
 a={v.get("name"):v for v in d.get("assets",[])}
 out=[tag]
 for name in names:
@@ -124,15 +127,51 @@ PY
 fi
 status downloading "$tag" "Downloading verified stable release"
 base="https://github.com/$REPO/releases/download/$tag"
-names=(install.sh "filter-vision-$tag.tar.gz" "filter-vision-$tag.sha256")
-for i in 0 1 2; do
+names=("filter-vision-$tag.tar.gz" "filter-vision-$tag.sha256")
+for i in 0 1; do
   name="${names[$i]}"
   curl -fLsS --retry 3 --retry-all-errors --connect-timeout 8 --max-time 150     -o "$work/$name" "$base/$name"
   observed="$(sha256sum "$work/$name" | awk '{print $1}')"
   expected="${md[$((i+1))]}"
   [[ "$observed" == "$expected" ]] || { echo "Asset checksum mismatch" >&2; false; }
 done
-bash -n "$work/install.sh"
+# Verify the actual tarball against its pinned release manifest before
+# extracting a single bundled guest setup script. Do not execute network
+# content that has not passed this integrity check.
+expected="$(awk -v f="filter-vision-$tag.tar.gz" '$2==f {print $1}' "$work/filter-vision-$tag.sha256")"
+[[ "$expected" =~ ^[a-f0-9]{64}$ ]] || { echo "Invalid versioned archive manifest" >&2; false; }
+observed="$(sha256sum "$work/filter-vision-$tag.tar.gz" | cut -d' ' -f1)"
+[[ "$observed" == "$expected" ]] || { echo "Versioned archive SHA256 mismatch" >&2; false; }
+python3 - "$work/filter-vision-$tag.tar.gz" "$work/guest-install.sh" <<'PYINSTALL'
+from pathlib import Path, PurePosixPath
+import os
+import sys
+import tarfile
+archive, target = sys.argv[1:]
+with tarfile.open(archive, "r:gz") as bundle:
+    members = bundle.getmembers()
+    if not members or len(members) > 200:
+        raise SystemExit("Invalid stable archive")
+    if any(not (m.isfile() or m.isdir()) or
+           not m.name.startswith("filter-vision/") or
+           ".." in PurePosixPath(m.name).parts or
+           m.size > 10 * 1024 * 1024 for m in members):
+        raise SystemExit("Unsafe stable archive member")
+    try:
+        member = bundle.getmember("filter-vision/packaging/install.sh")
+    except KeyError:
+        raise SystemExit("Stable release is missing internal guest setup")
+    if not member.isfile() or not 1000 <= member.size <= 100 * 1024:
+        raise SystemExit("Invalid internal guest setup")
+    stream = bundle.extractfile(member)
+    if stream is None:
+        raise SystemExit("Cannot read internal guest setup")
+    with open(target, "xb") as out:
+        out.write(stream.read(100 * 1024 + 1))
+    if os.stat(target).st_size != member.size:
+        raise SystemExit("Truncated internal guest setup")
+PYINSTALL
+bash -n "$work/guest-install.sh"
 if [[ -f /var/lib/filter-vision/filter-vision.sqlite3 ]]; then
   backup="$BACKUPS/before-$tag-$(date -u +%Y%m%dT%H%M%SZ).sqlite3"
   python3 - /var/lib/filter-vision/filter-vision.sqlite3 "$backup" <<'PY'
@@ -146,7 +185,7 @@ PY
 fi
 status applying "$tag" "Installing verified stable release and checking health"
 attempted=1
-bash "$work/install.sh" --version "$tag"   --archive "$work/filter-vision-$tag.tar.gz"   --sha256 "$work/filter-vision-$tag.sha256" >"$work/installer.log" 2>&1
+bash "$work/guest-install.sh" --version "$tag"   --archive "$work/filter-vision-$tag.tar.gz"   --sha256 "$work/filter-vision-$tag.sha256" >"$work/installer.log" 2>&1
 installed="$("$CURRENT/venv/bin/python" -c 'import filter_vision;print(filter_vision.__version__)')"
 [[ "v$installed" == "$tag" ]] || { echo "Installed version mismatch" >&2; false; }
 systemctl is-active --quiet "$SERVICE"

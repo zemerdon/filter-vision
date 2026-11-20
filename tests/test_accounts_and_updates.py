@@ -20,8 +20,8 @@ def test_disabled_account_draft(signed_in, app):
 
 def test_stable_updates_queues_fixed_action(signed_in, app, monkeypatch):
     client, csrf = signed_in
-    payload = {"tag_name": "v0.2.3", "html_url":
-               "https://github.com/zemerdon/filter-vision/releases/tag/v0.2.3",
+    payload = {"tag_name": "v0.2.4", "html_url":
+               "https://github.com/zemerdon/filter-vision/releases/tag/v0.2.4",
                "target_commitish": "stable", "prerelease": False, "draft": False}
     def fake_open(*args, **kwargs):
         return io.BytesIO(json.dumps(payload).encode())
@@ -29,8 +29,8 @@ def test_stable_updates_queues_fixed_action(signed_in, app, monkeypatch):
     assert client.post("/updates/check", data={"csrf": csrf},
                        follow_redirects=False).status_code == 303
     page = client.get("/updates").text
-    assert "v0.2.3" in page
-    assert "Apply v0.2.3 stable update" in page
+    assert "v0.2.4" in page
+    assert "Apply v0.2.4 stable update" in page
     assert "no develop update channel" in page.lower()
     assert client.post("/updates/apply", data={"csrf": csrf+"x"}).status_code == 403
     assert client.post("/updates/apply", data={"csrf": csrf},
@@ -54,8 +54,8 @@ def test_stable_updates_invalid_api_payload(signed_in, monkeypatch):
 
 def test_stable_updates_rejects_wrong_branch(signed_in, monkeypatch):
     client, csrf = signed_in
-    payload = {"tag_name": "v0.2.3", "html_url":
-               "https://github.com/zemerdon/filter-vision/releases/tag/v0.2.3",
+    payload = {"tag_name": "v0.2.4", "html_url":
+               "https://github.com/zemerdon/filter-vision/releases/tag/v0.2.4",
                "target_commitish": "main", "prerelease": False, "draft": False}
     monkeypatch.setattr("urllib.request.urlopen",
                         lambda *a,**kw: io.BytesIO(json.dumps(payload).encode()))
@@ -67,8 +67,8 @@ def test_stable_updates_rejects_wrong_branch(signed_in, monkeypatch):
 
 def test_stable_updates_rejects_prerelease(signed_in, monkeypatch):
     client, csrf = signed_in
-    payload = {"tag_name": "v0.2.3", "html_url":
-               "https://github.com/zemerdon/filter-vision/releases/tag/v0.2.3",
+    payload = {"tag_name": "v0.2.4", "html_url":
+               "https://github.com/zemerdon/filter-vision/releases/tag/v0.2.4",
                "target_commitish": "stable", "prerelease": True, "draft": False}
     monkeypatch.setattr("urllib.request.urlopen",
                         lambda *a,**kw: io.BytesIO(json.dumps(payload).encode()))

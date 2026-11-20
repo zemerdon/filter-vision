@@ -14,7 +14,10 @@ def build() -> tuple[Path, Path]:
     DIST.mkdir(exist_ok=True)
     artifact = DIST / f"filter-vision-{TAG}.tar.gz"
     digest = DIST / f"filter-vision-{TAG}.sha256"
-    inputs = [REPO / "pyproject.toml", REPO / "packaging" / "update-stable.sh",
+    # This guest bootstrap is required *inside* the signed application
+    # archive, but is no longer a separate publicly advertised installer.
+    inputs = [REPO / "pyproject.toml", REPO / "packaging" / "install.sh",
+              REPO / "packaging" / "update-stable.sh",
               REPO / "packaging" / "install-cleaner.sh",
               REPO / "packaging" / "install-controls.sh",
               REPO / "packaging" / "install-proxmox.sh",

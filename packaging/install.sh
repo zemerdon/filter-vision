@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Filter Vision — Debian 13 stable release installer; supports existing LXC.
+# Filter Vision — INTERNAL Debian 13 guest bootstrap for verified stable bundles.
+# Invoked by the Proxmox one-liner and by the root-owned WebUI updater.
+# Not advertised as a second public fresh-installation method.
 set -Eeuo pipefail
 umask 077
 REPO="zemerdon/filter-vision"

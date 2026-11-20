@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import urllib.request
@@ -216,8 +217,7 @@ try:
             if metadata.get("draft") or metadata.get("prerelease") or not TAG_RE.fullmatch(tag):
                 fail("Latest GitHub release is not a stable semver tag")
         base = f"https://github.com/{REPO}/releases/download/{tag}"
-        print(f"Retrieving pinned {tag} release and SHA256 manifest...")
-        installer = fetch(base + "/install.sh", work / "install.sh")
+        print(f"Retrieving pinned {tag} stable application archive and SHA256...")
         archive = fetch(base + f"/filter-vision-{tag}.tar.gz",
                         work / f"filter-vision-{tag}.tar.gz")
         checksum = fetch(base + f"/filter-vision-{tag}.sha256",
@@ -232,6 +232,35 @@ try:
             fail("Invalid stable release SHA256 manifest")
         if actual.lower() != expected.lower():
             fail("Stable release artifact checksum mismatch; CT not created")
+        # One public entry point: the internal Debian guest installer is
+        # bundled INSIDE the verified versioned application archive.
+        # Never fetch or expose a second public installer asset.
+        installer = work / "guest-setup.sh"
+        try:
+            with tarfile.open(archive, "r:gz") as bundle:
+                members = bundle.getmembers()
+                if not members or len(members) > 200:
+                    fail("Invalid release archive structure")
+                if any(
+                    not (m.isfile() or m.isdir())
+                    or not m.name.startswith("filter-vision/")
+                    or ".." in pathlib.PurePosixPath(m.name).parts
+                    or m.size > 10 * 1024 * 1024
+                    for m in members
+                ):
+                    fail("Unsafe application release archive")
+                guest = bundle.getmember("filter-vision/packaging/install.sh")
+                if not guest.isfile() or not 1000 <= guest.size <= 100 * 1024:
+                    fail("Verified archive has no valid guest bootstrap")
+                stream = bundle.extractfile(guest)
+                if stream is None:
+                    fail("Cannot read the internal guest bootstrap")
+                with open(installer, "xb") as dest:
+                    dest.write(stream.read(100 * 1024 + 1))
+        except (tarfile.TarError, KeyError, OSError) as exc:
+            fail("Verified release archive lacks a usable internal installer")
+        if installer.stat().st_size != guest.size:
+            fail("Incomplete guest bootstrap in verified release archive")
         run(["bash", "-n", str(installer)])
         # Recheck cluster collision just before creation, to reject stale defaults.
         updated = json.loads(run([
