@@ -51,6 +51,13 @@ from .manual_eval import evaluate, FIELD_OPTIONS, OPERATORS
 from .live import load_policy, LiveSafetyError
 from .control import (control_view, request_control, ControlError,
                       INTERVALS, ACTIONS, service_status)
+from .rule_activation import (read_approvals, source_digest, ActivationError,
+                              _draft_rule)
+from .activation_preview import preview_rule, ApprovalPreviewError
+from .control import request_rule_control, request_managed_control
+from .managed_rules import (read_managed, effective, normalize, ManagedError)
+
+
 
 # Restrict passwordless administration to explicitly trusted local networks.
 # The installer adds the instance network to the trusted list at deployment.
@@ -682,17 +689,175 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
                 "SELECT * FROM rule_review_requests "
                 "WHERE status='pending_review' ORDER BY id DESC LIMIT 100")]
         approved = live_account_ids()
-        approved_ids = ({r["id"] for r in rules if r["kind"] == "legacy_raw_header"}
-                        if approved else set())
+        legacy_ids = {r["id"] for r in rules if r["kind"] == "legacy_raw_header"}
+        active_legacy = set(legacy_ids) if approved else set()
+        activation_error = ""
+        custom_active = {}
+        managed_legacy = {}
+        managed_custom = {}
+        try:
+            saved = read_approvals()
+            managed = read_managed()
+            original = {r["id"]: dict(r) for r in rules}
+            for entry in managed["legacy"]:
+                source = original.get(entry["id"])
+                if (source is None or source["kind"] != "legacy_raw_header"
+                        or source_digest(source) != entry["sha256"]):
+                    raise ManagedError("Original rule approval source has changed")
+                managed_legacy[entry["id"]] = entry
+                if not entry["enabled"]:
+                    active_legacy.discard(entry["id"])
+            for entry in managed["custom"]:
+                source = original.get(entry["id"])
+                if (source is None or source["kind"] == "legacy_raw_header"
+                        or source_digest(source) != entry["sha256"]):
+                    raise ManagedError("Custom rule source has changed")
+                managed_custom[entry["id"]] = entry
+            for entry in saved:
+                source = original.get(entry["id"])
+                if (source is None or source_digest(source) != entry["sha256"]
+                        or source["kind"] == "legacy_raw_header"):
+                    raise ActivationError("An approved custom rule was changed unexpectedly")
+                custom_active[entry["id"]] = entry["accounts"]
+            for rule in rules:
+                overlay = (managed_legacy.get(rule["id"]) if rule["id"] in legacy_ids
+                           else managed_custom.get(rule["id"]))
+                if overlay is not None:
+                    rule.update(effective(original[rule["id"]], overlay))
+        except (ActivationError, ManagedError):
+            activation_error = (
+                "Protected rule approval needs attention. Rule controls are unavailable.")
+            custom_active = {}
+            active_legacy = set()
         editable_ids = {r["id"] for r in rules if
-                        r["kind"] != "legacy_raw_header"
+                        r["id"] not in legacy_ids
                         and r["enabled"] == 0 and r["action"] == "draft"
-                        and r["kind"] in DRAFT_KINDS
+                        and (r["kind"] in DRAFT_KINDS or r["id"] in managed_custom)
                         and r["id"] not in scope_ids}
+        approved_ids = active_legacy
+        control = control_view(store.directory)
+        changed = request.query_params.get("changed", "")
+        requested = request.query_params.get("action", "")
+        result = ""
+        waiting = False
+        if changed.isdecimal() and requested in ("enable", "disable", "edit"):
+            rule_id = int(changed)
+            active = (rule_id in active_legacy if rule_id in legacy_ids
+                      else rule_id in custom_active)
+            last = control["last_action"]
+            expected = ({"legacy-enable", "legacy-disable", "legacy-edit"}
+                        if rule_id in legacy_ids else
+                        {"enable-rule", "disable-rule", "custom-edit"})
+            relevant = last.get("rule_id") == rule_id and last.get("action") in expected
+            if control["request_pending"] or (relevant and last.get("state") == "processing"):
+                waiting = True
+                result = "Applying rule change…"
+            elif relevant and last.get("state") == "failed":
+                result = "Rule change failed; no activation confirmed"
+            elif (requested == "enable" and active and
+                  (not relevant or last.get("state") == "success")):
+                result = f"Activated rule #{rule_id}"
+            elif (requested == "disable" and not active and
+                  (not relevant or last.get("state") == "success")):
+                result = f"Disabled rule #{rule_id}"
+            elif requested == "edit" and relevant and last.get("state") == "success":
+                result = f"Saved rule #{rule_id}"
+            else:
+                waiting = bool(relevant and last.get("state") == "success")
+                result = ("Applying rule change…" if waiting else
+                          "Rule change not confirmed; check service status")
         return render(request, "rules.html", active="rules", sess=sess,
                       rules=rules, approved_ids=approved_ids,
-                      editable_ids=editable_ids,
-                      accounts=accounts, review_requests=reviews)
+                      legacy_ids=legacy_ids, editable_ids=editable_ids,
+                      custom_active=custom_active, managed_custom=managed_custom,
+                      activation_error=activation_error,
+                      accounts=accounts, review_requests=reviews,
+                      control=control, change_result=result, change_waiting=waiting)
+
+
+    @app.post("/rules/{rule_id}/toggle", response_class=HTMLResponse)
+    def toggle_custom_rule(request: Request, rule_id: int,
+                           csrf: str = Form(""), action: str = Form("")):
+        """Exactly one click: automatic read-only preview, root-validated write.
+
+        No checkbox or approval confirmation form. The UI shows success only
+        after the root-owned policy actually reflects the requested state.
+        """
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        if not valid_csrf(sess, csrf):
+            return invalid_csrf()
+        if action not in ("enable", "disable"):
+            return HTMLResponse("Unsupported rule action", status_code=400)
+        try:
+            root = load_policy()
+            with store.db() as con:
+                baseline = con.execute(
+                    "SELECT * FROM rules WHERE id=?", (rule_id,)).fetchone()
+                if baseline is None:
+                    return HTMLResponse("Rule not found", status_code=404)
+                baseline = dict(baseline)
+            original = baseline["kind"] == "legacy_raw_header"
+            snapshot = read_managed()
+            overlay = next((item for item in snapshot[
+                "legacy" if original else "custom"] if item["id"] == rule_id), None)
+            active_approvals = {
+                item["id"]: item for item in read_approvals()}
+            if original:
+                currently_active = overlay is None or overlay["enabled"]
+                if currently_active == (action == "enable"):
+                    return RedirectResponse("/rules", status_code=303)
+                if action == "enable":
+                    rule = effective(baseline, overlay)
+                    if not all(app.state.token_vault.connected(i) for i in root["accounts"]):
+                        return HTMLResponse("Both Microsoft accounts must be connected",
+                                            status_code=409)
+                    preview_rule(store, rule, sorted(root["accounts"]),
+                                 app.state.token_vault)
+                control_action = "legacy-enable" if action == "enable" else "legacy-disable"
+                ok = request_managed_control(
+                    store.directory, control_action, rule_id, source_digest(baseline))
+            else:
+                if action == "enable":
+                    if rule_id in active_approvals:
+                        return RedirectResponse("/rules", status_code=303)
+                    with store.db() as con:
+                        _draft_rule(con, rule_id)
+                    rule = effective(baseline, overlay)
+                    accounts = sorted(root["accounts"])
+                    if not all(app.state.token_vault.connected(i) for i in accounts):
+                        return HTMLResponse("Both Microsoft accounts must be connected",
+                                            status_code=409)
+                    report = preview_rule(store, rule, accounts, app.state.token_vault)
+                    store.audit("rule_activation_preview",
+                                "rule_id=%d accounts=%d examined=%d matched=%d" %
+                                (rule_id, len(report),
+                                 sum(item["examined"] for item in report),
+                                 sum(item["matched"] for item in report)))
+                    fingerprint = source_digest(baseline)
+                    control_action = "enable-rule"
+                else:
+                    entry = active_approvals.get(rule_id)
+                    if entry is None:
+                        return RedirectResponse("/rules", status_code=303)
+                    accounts = entry["accounts"]
+                    fingerprint = entry["sha256"]
+                    control_action = "disable-rule"
+                ok = request_rule_control(store.directory, control_action,
+                                          rule_id, accounts, fingerprint)
+        except (LiveSafetyError, ActivationError, ApprovalPreviewError,
+                ControlError, ManagedError, OSError, TypeError):
+            return HTMLResponse(
+                "Rule change could not be verified or queued; no change applied",
+                status_code=409)
+        if not ok:
+            return HTMLResponse("Another cleaner operation is pending",
+                                status_code=409)
+        store.audit("rule_control_queued",
+                    "rule_id=%d action=%s" % (rule_id, control_action))
+        return RedirectResponse(
+            f"/rules?changed={rule_id}&action={action}", status_code=303)
 
     @app.get("/rules/{rule_id}/edit", response_class=HTMLResponse)
     def edit_draft_form(request: Request, rule_id: int):
@@ -700,58 +865,108 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
         if denial:
             return denial
         with store.db() as con:
-            try:
-                rule = draft_guard(con, rule_id)
-                proposal = False
-            except RuleManagementError as error:
-                if error.status_code == 404:
-                    return HTMLResponse(str(error), status_code=404)
-                try:
-                    rule = source_snapshot(store, rule_id)
-                except RuleManagementError as missing:
-                    return HTMLResponse(str(missing), status_code=missing.status_code)
-                proposal = True
+            source = con.execute("SELECT * FROM rules WHERE id=?", (rule_id,)).fetchone()
+        if source is None:
+            return HTMLResponse("Rule not found", status_code=404)
+        source = dict(source)
+        try:
+            config = read_managed()
+            kind = "legacy" if source["kind"] == "legacy_raw_header" else "custom"
+            overlay = next((item for item in config[kind] if item["id"] == rule_id), None)
+            rule = effective(source, overlay)
+            proposal = False
+            legacy_edit = kind == "legacy"
+        except ManagedError:
+            return HTMLResponse("Managed rule approval unavailable", status_code=409)
         current_code = f"{rule['kind']}:{rule['field']}"
         definitions = list(RULE_DEFINITIONS)
-        if proposal:
-            definitions.append(("legacy_raw_header", "raw", "Legacy raw header (review only)"))
+        if legacy_edit:
+            definitions.append(("legacy_raw_header", "raw", "Original raw-header substring"))
         if current_code not in {f"{k}:{f}" for k, f, _ in definitions}:
             # Older drafts may use noncanonical header casing.
             matches = [f"{k}:{f}" for k, f, _ in definitions if k == rule["kind"]]
             if not matches:
                 return HTMLResponse("Unsupported rule kind", status_code=409)
             current_code = matches[0]
+        try:
+            root_status = read_approvals()
+            is_active = ((overlay is None or overlay["enabled"]) if legacy_edit
+                         else any(x["id"] == rule_id for x in root_status))
+        except ActivationError:
+            return HTMLResponse("Root rule approvals unavailable", status_code=409)
         return render(request, "rule_edit.html", active="rules", sess=sess,
-                      rule=rule, proposal=proposal,
+                      rule=rule, proposal=proposal, is_active=is_active,
+                      legacy_edit=legacy_edit,
                       definitions=definitions, selected_definition=current_code,
                       editor_action=f"/rules/{rule_id}/edit")
 
     @app.post("/rules/{rule_id}/edit", response_class=HTMLResponse)
     def save_edited_draft(request: Request, rule_id: int, csrf: str = Form(""),
                           definition: str = Form(""), value: str = Form(""),
-                          label: str = Form("")):
+                          label: str = Form(""),
+                          enable_after_save: str = Form("")):
         sess, denial = guard(request)
         if denial:
             return denial
         if not valid_csrf(sess, csrf):
             return invalid_csrf()
+        if enable_after_save not in ("", "yes"):
+            return HTMLResponse("Invalid rule edit action", status_code=400)
         try:
             with store.db() as con:
-                try:
-                    draft_guard(con, rule_id)
-                    direct_draft = True
-                except RuleManagementError as error:
-                    if error.status_code == 404:
-                        raise
-                    direct_draft = False
-            if direct_draft:
-                update_draft(store, rule_id, definition, value, label)
+                source = con.execute("SELECT * FROM rules WHERE id=?", (rule_id,)).fetchone()
+            if source is None:
+                return HTMLResponse("Rule not found", status_code=404)
+            source = dict(source)
+            if definition == "legacy_raw_header:raw":
+                if source["kind"] != "legacy_raw_header":
+                    return HTMLResponse("Legacy type is reserved for imported rules",
+                                        status_code=400)
+                override = normalize("legacy_raw_header", "raw", value, label)
             else:
-                queue_review(store, rule_id, "edit",
-                             definition=definition, value=value, label=label)
+                from .rule_management import parse_edit
+                kind, field, pattern, title = parse_edit(definition, value, label)
+                override = normalize(kind, field, pattern, title)
+            config = read_managed()
+            original = source["kind"] == "legacy_raw_header"
+            group = "legacy" if original else "custom"
+            overlay = next((item for item in config[group] if item["id"] == rule_id), None)
+            custom_active = {x["id"]: x for x in read_approvals()}
+            active = ((overlay is None or overlay["enabled"]) if original
+                      else rule_id in custom_active)
+            managed = original or active or overlay is not None
+            if not managed:
+                update_draft(store, rule_id, definition, value, label)
+                if enable_after_save == "yes":
+                    return toggle_custom_rule(
+                        request, rule_id, csrf=csrf, action="enable")
+                return RedirectResponse("/rules", status_code=303)
+            root = load_policy()
+            will_be_active = active or enable_after_save == "yes"
+            if will_be_active:
+                if not all(app.state.token_vault.connected(i) for i in root["accounts"]):
+                    return HTMLResponse("Both Microsoft accounts must be connected",
+                                        status_code=409)
+                preview_rule(store, {"id": rule_id, **override},
+                             sorted(root["accounts"]), app.state.token_vault)
+            action = "legacy-edit" if original else "custom-edit"
+            ok = request_managed_control(
+                store.directory, action, rule_id, source_digest(source),
+                override, activate=enable_after_save == "yes")
         except RuleManagementError as error:
             return HTMLResponse(str(error), status_code=error.status_code)
-        return RedirectResponse("/rules", status_code=303)
+        except (ManagedError, ControlError, ActivationError,
+                LiveSafetyError, ApprovalPreviewError, OSError, TypeError):
+            return HTMLResponse(
+                "Rule edit not applied: invalid rule or protected service unavailable",
+                status_code=409)
+        if not ok:
+            return HTMLResponse("Another rule operation is pending", status_code=409)
+        store.audit("rule_edit_queued",
+                    "rule_id=%d action=%s" % (rule_id, action))
+        return RedirectResponse(
+            f"/rules?changed={rule_id}&action={'enable' if enable_after_save == 'yes' else 'edit'}",
+            status_code=303)
 
     @app.post("/rules/{rule_id}/duplicate", response_class=HTMLResponse)
     def copy_draft(request: Request, rule_id: int, csrf: str = Form("")):
@@ -762,22 +977,36 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
             return invalid_csrf()
         try:
             with store.db() as con:
-                try:
-                    draft_guard(con, rule_id)
-                    direct_draft = True
-                except RuleManagementError as error:
-                    if error.status_code == 404:
-                        raise
-                    direct_draft = False
-            if direct_draft:
-                new_id = duplicate_draft(store, rule_id)
-                destination = f"/rules/{new_id}/edit"
-            else:
-                new_id = queue_review(store, rule_id, "duplicate")
-                destination = f"/rule-reviews/{new_id}/edit"
-        except RuleManagementError as error:
-            return HTMLResponse(str(error), status_code=error.status_code)
-        return RedirectResponse(destination, status_code=303)
+                source = con.execute("SELECT * FROM rules WHERE id=?", (rule_id,)).fetchone()
+            if source is None:
+                return HTMLResponse("Rule not found", status_code=404)
+            source = dict(source)
+            group = "legacy" if source["kind"] == "legacy_raw_header" else "custom"
+            config = read_managed()
+            overlay = next((item for item in config[group] if item["id"] == rule_id), None)
+            resolved = effective(source, overlay)
+            if source["kind"] == "legacy_raw_header" and resolved["kind"] == "legacy_raw_header":
+                resolved["kind"], resolved["field"] = "custom_raw_header", "All raw headers"
+            # Never duplicate active scopes or effective permission; the copy
+            # is always an entirely new, disabled, unscoped rule.
+            if resolved["kind"] not in DRAFT_KINDS:
+                return HTMLResponse("Unsupported rule type for duplication", status_code=409)
+            proposed = normalize(
+                resolved["kind"], resolved["field"], resolved["pattern"],
+                ("Copy of " + resolved["label"])[:200])
+            with store.db() as con:
+                con.execute("BEGIN IMMEDIATE")
+                cur = con.execute(
+                    "INSERT INTO rules(label,kind,field,pattern,created_at) "
+                    "VALUES(?,?,?,?,?)",
+                    (proposed["label"], proposed["kind"], proposed["field"],
+                     proposed["pattern"], int(time.time())))
+                new_id = cur.lastrowid
+            store.audit("rule_draft_duplicated",
+                        "source_rule_id=%d new_rule_id=%d" % (rule_id, new_id))
+        except (ManagedError, RuleManagementError, OSError, TypeError):
+            return HTMLResponse("Rule cannot be duplicated", status_code=409)
+        return RedirectResponse(f"/rules/{new_id}/edit", status_code=303)
 
     @app.post("/rules/{rule_id}/request", response_class=HTMLResponse)
     def request_rule_toggle(request: Request, rule_id: int, csrf: str = Form(""),
@@ -814,7 +1043,7 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
         if current_code not in {f"{k}:{f}" for k, f, _ in definitions}:
             return HTMLResponse("Unsupported review definition", status_code=409)
         return render(request, "rule_edit.html", active="rules", sess=sess,
-                      rule=rule, proposal=True, definitions=definitions,
+                      rule=rule, proposal=True, is_active=False, definitions=definitions,
                       selected_definition=current_code,
                       editor_action=f"/rule-reviews/{request_id}/edit")
 
@@ -841,8 +1070,6 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
             return denial
         if not valid_csrf(sess, csrf):
             return invalid_csrf()
-        if confirm != "cancel":
-            return HTMLResponse("Confirm cancellation", status_code=400)
         try:
             cancel_review(store, request_id)
         except RuleManagementError as error:
@@ -857,8 +1084,6 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
             return denial
         if not valid_csrf(sess, csrf):
             return invalid_csrf()
-        if confirm != "delete":
-            return HTMLResponse("Confirm removal of this disabled draft", status_code=400)
         try:
             delete_draft(store, rule_id)
         except RuleManagementError as error:

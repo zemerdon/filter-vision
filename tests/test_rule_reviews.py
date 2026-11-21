@@ -74,8 +74,8 @@ def test_draft_enable_stages_only_valid_account_scope(signed_in, app):
     assert json.loads(review["account_ids"]) == [account_id]
     assert review["kind"] == "sender_domain"
     assert review["pattern"] == "sub.example.invalid"
-    assert "Pending rule reviews" in client.get("/rules").text
-    assert "Pending review" in client.get("/rules").text
+    assert "Pending proposals" in client.get("/rules").text
+    assert "Pending proposals" in client.get("/rules").text
 
 
 def test_legacy_disable_keeps_all_signatures_and_scopes(signed_in, app):
@@ -98,55 +98,63 @@ def test_legacy_disable_keeps_all_signatures_and_scopes(signed_in, app):
         "csrf": csrf,"confirm":"delete"}).status_code == 409
 
 
-def test_edit_proposal_does_not_mutate_approved_source(signed_in, app):
-    client, csrf = signed_in
-    store = app.state.store
-    aid = add_account(store)
-    rule_id = add_legacy(store, aid)
-    before = rows(store)
-    d = client.post(f"/rules/{rule_id}/duplicate",
-                    data={"csrf": csrf}, follow_redirects=False)
-    assert d.status_code == 303
-    assert d.headers["location"].startswith("/rule-reviews/")
-    editor = client.get(d.headers["location"])
-    assert editor.status_code == 200
-    assert "Save proposed change" in editor.text
-    # A reviewed copy can propose a supported precise matcher without
-    # touching the original root-owned raw-header signature.
-    updated = client.post(d.headers["location"],data={
-        "csrf": csrf, "definition": "sender_domain:From",
-        "value": "other.example.invalid", "label": "Copy for review"},
-        follow_redirects=False)
-    assert updated.status_code == 303
-    after = rows(store)
-    assert after[0] == before[0] and after[1] == before[1]
-    assert len(after[2]) == 1
-    assert after[2][0]["kind"] == "sender_domain"
-    assert after[2][0]["pattern"] == "other.example.invalid"
-    request_id = after[2][0]["id"]
-    assert load_review(store, request_id)["label"] == "Copy for review"
-    assert client.post(f"/rule-reviews/{request_id}/cancel",data={
-        "csrf": csrf,"confirm":"cancel"},follow_redirects=False).status_code == 303
-    assert rows(store)[2][0]["status"] == "cancelled"
-    assert client.post(f"/rule-reviews/{request_id}/cancel",data={
-        "csrf": csrf,"confirm":"cancel"}).status_code == 409
-    assert client.get(d.headers["location"]).status_code == 409
-
-
-def test_review_source_drift_fails_closed(signed_in, app):
+def test_legacy_duplicate_is_direct_disabled_copy_not_a_review(signed_in, app):
     client, csrf = signed_in
     store = app.state.store
     aid = add_account(store)
     rid = add_legacy(store, aid)
-    duplicate = client.post(f"/rules/{rid}/duplicate",
-                            data={"csrf":csrf},follow_redirects=False)
-    assert duplicate.status_code == 303
+    before = rows(store)
+    duplicated = client.post(f"/rules/{rid}/duplicate",
+                             data={"csrf":csrf},follow_redirects=False)
+    assert duplicated.status_code == 303
+    assert duplicated.headers["location"].startswith("/rules/")
+    copied_id = int(duplicated.headers["location"].split("/")[2])
     with store.db() as con:
-        con.execute("UPDATE rules SET label='Changed under approval' WHERE id=?", (rid,))
-    assert client.get(duplicate.headers["location"]).status_code == 409
-    assert client.post(duplicate.headers["location"],data={
+        copied = dict(con.execute("SELECT * FROM rules WHERE id=?",
+                                  (copied_id,)).fetchone())
+        current = dict(con.execute("SELECT * FROM rules WHERE id=?",
+                                   (rid,)).fetchone())
+        scopes = [tuple(x) for x in con.execute("SELECT * FROM rule_scopes")]
+        reviews = con.execute("SELECT COUNT(*) FROM rule_review_requests").fetchone()[0]
+    assert copied["kind"] == "custom_raw_header"
+    assert copied["enabled"] == 0 and copied["action"] == "draft"
+    assert current == before[0][0] and scopes == before[1]
+    assert reviews == 0
+    # Editing the duplicate is a normal draft save, without root-only
+    # original signature mutation or a second confirmation page.
+    changed = client.post(f"/rules/{copied_id}/edit", data={
         "csrf":csrf, "definition":"sender_domain:From",
-        "value":"different.example.invalid","label":"Change"}).status_code == 409
+        "value":"other.example.invalid", "label":"Independent copy"},
+        follow_redirects=False)
+    assert changed.status_code == 303
+    with store.db() as con:
+        copied_new = dict(con.execute("SELECT * FROM rules WHERE id=?",
+                                     (copied_id,)).fetchone())
+        original = dict(con.execute("SELECT * FROM rules WHERE id=?",(rid,)).fetchone())
+    assert copied_new["pattern"] == "other.example.invalid"
+    assert original == current
+
+
+def test_root_original_drift_does_not_rewrite_independent_copy(signed_in, app):
+    client, csrf = signed_in
+    store = app.state.store
+    aid = add_account(store)
+    rid = add_legacy(store, aid)
+    duplicated = client.post(f"/rules/{rid}/duplicate",
+                             data={"csrf":csrf},follow_redirects=False)
+    assert duplicated.status_code == 303
+    with store.db() as con:
+        con.execute("UPDATE rules SET label='Changed underneath original root policy' "
+                    "WHERE id=?", (rid,))
+    # The disabled copied draft is independent of imported original's
+    # subsequent label and is editable without inheriting any approval.
+    editor = client.get(duplicated.headers["location"])
+    assert editor.status_code == 200
+    copied_id = int(duplicated.headers["location"].split("/")[2])
+    with store.db() as con:
+        copied = dict(con.execute("SELECT * FROM rules WHERE id=?",
+                                  (copied_id,)).fetchone())
+    assert copied["enabled"] == 0 and copied["action"] == "draft"
 
 
 def test_csrf_origin_and_replay_fails_closed(signed_in, app):

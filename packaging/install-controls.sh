@@ -25,7 +25,7 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/filter-vision /var/lib/filter-vision-control /run/lock -/etc/systemd/system/filter-vision-cleaner.timer.d
+ReadWritePaths=/var/lib/filter-vision /var/lib/filter-vision-control /run/lock -/etc/systemd/system/filter-vision-cleaner.timer.d -/etc/filter-vision
 RestrictAddressFamilies=AF_UNIX
 UNIT
 cat > /etc/systemd/system/filter-vision-control.path <<'UNIT'

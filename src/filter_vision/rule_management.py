@@ -1,7 +1,7 @@
-"""Only inert, unscoped rule drafts may be edited, duplicated or deleted.
+"""Validated draft editing, with reversible root-owned active overrides.
 
-The existing root-authorized legacy rule set is deliberately immutable here.
-A WebUI request cannot change root approvals or enlarge live deletion scope.
+Direct SQLite draft mutations stay inert; protected and activated rules are
+edited through separate signed root-controlled actions.
 """
 from __future__ import annotations
 
@@ -19,9 +19,11 @@ RULE_DEFINITIONS = (
     ("header_contains", "Feedback-ID", "Feedback-ID campaign marker"),
     ("subject_exact", "Subject", "Exact subject"),
     ("click_destination", "HTML click destination",
-     "HTML click hostname — analysis only (cannot be enabled)"),
+       "HTML click hostname — exact destination match"),
     ("raw_header_contains", "All raw headers",
-     "Raw-header substring — legacy matching evidence (review-only)"),
+     "Raw-header substring — legacy-style matching"),
+    ("custom_raw_header", "All raw headers",
+     "Original-style raw-header substring"),
 )
 DEFINITION_CODES = {f"{kind}:{field}": (kind, field)
                     for kind, field, _ in RULE_DEFINITIONS}
@@ -58,6 +60,18 @@ def draft_guard(con: sqlite3.Connection, rule_id: int) -> dict:
     ).fetchone():
         raise RuleManagementError(
             "Scoped rule cannot be modified until its approval is reviewed")
+    # The original draft row remains disabled even after a separate root
+    # approval. Editing or deleting its text must never silently affect a
+    # destructive matcher. Disable it first with the one-click control.
+    from .rule_activation import read_approvals, ActivationError
+    from .managed_rules import read_managed, ManagedError
+    try:
+        if (any(item["id"] == rule_id for item in read_approvals())
+                or any(item["id"] == rule_id for item in read_managed()["custom"])):
+            raise RuleManagementError(
+                "This rule is managed by the protected control; use Edit")
+    except (ActivationError, ManagedError):
+        raise RuleManagementError("Protected rule approvals are unavailable") from None
     return record
 
 

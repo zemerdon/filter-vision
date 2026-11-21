@@ -1,15 +1,15 @@
 {% extends "base.html" %}
-{% block title %}{{ "Edit proposed rule change" if proposal else "Edit rule draft" }}{% endblock %}
+{% block title %}{{ "Edit proposed rule change" if proposal else "Edit rule" }}{% endblock %}
 {% block content %}
 <div class="heading">
   <div>
     <p class="eyebrow">FILTER ENGINE / {{ "REVIEW REQUEST" if proposal else "RULE" }} #{{ rule.id }}</p>
-    <h1>{{ "Prepare a rule change" if proposal else "Edit rule draft" }}</h1>
+    <h1>{{ "Prepare a rule change" if proposal else "Edit rule" }}</h1>
     <p class="muted">
       {% if proposal %}
       Edit an inactive candidate. The original rule and active mail deletion are untouched.
       {% else %}
-      Update the description, matching method or value for this inactive draft.
+      Edit the name and matching condition. Save applies the change without a confirmation page.
       {% endif %}
     </p>
   </div>
@@ -17,19 +17,24 @@
 </div>
 <div class="info">
   {% if proposal %}
-    <strong>Review required.</strong> Saving creates or updates an isolated proposal.
-    It cannot change the root-approved 22 signatures, account scopes or running cleaner.
-    A separate exact-match, previewed approval is required before any active rule changes.
+    Saving updates the existing inactive proposal.
   {% else %}
-    This draft has no approved account scope and cannot delete messages. Saving it will not change
-    or restart the existing root-approved legacy cleaner.
+    {% if is_active %}
+      This rule is currently active. Saving a change updates its effective matcher
+      through the protected service.
+    {% else %}
+      Saving preserves its disabled state. Save &amp; Enable also activates it through
+      the protected service.
+    {% endif %}
+    The original imported signatures remain recoverable. No confirmation boxes.
   {% endif %}
 </div>
-{% if rule.kind in ["click_destination", "raw_header_contains"] %}
-<p class="click-draft-warning" role="note">Warning: this is a review-only
-  {{ "HTML click destination" if rule.kind == "click_destination" else "legacy-style raw-header substring" }}.
-  You may edit or duplicate the saved evidence, but it cannot be enabled by the
-  current protected cleaner or cause email deletion.</p>
+{% if rule.kind in ["click_destination", "raw_header_contains", "legacy_raw_header", "custom_raw_header"] %}
+<p class="click-draft-warning" role="note">
+  This rule can match messages in the two approved Junk folders. When activated,
+  matching messages may be permanently deleted by a scheduled scan.
+  The original imported value is retained for recovery.
+</p>
 {% endif %}
 <div class="panel rule-edit-panel">
   <form method="post" action="{{ editor_action }}" class="rule-edit-form">
@@ -52,10 +57,13 @@
     </label>
     <p class="muted small">
       Specific sender addresses and headers are safer than broad subject or domain conditions.
-      Proposed raw-header matches are never directly activated.
+      Header signatures and link-host rules are checked automatically on enable.
     </p>
     <div class="rule-edit-actions">
-      <button type="submit" class="btn primary">{{ "Save proposed change" if proposal else "Save draft" }}</button>
+      <button type="submit" class="btn primary">{{ "Save proposed change" if proposal else "Save" }}</button>
+      {% if not proposal and not is_active %}
+      <button type="submit" class="btn primary" name="enable_after_save" value="yes">Save &amp; Enable</button>
+      {% endif %}
       <a href="/rules" class="btn">Cancel</a>
     </div>
   </form>

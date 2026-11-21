@@ -50,7 +50,7 @@ def test_analyze_upload_and_disabled_rule(signed_in, app):
     with app.state.store.db() as con:
         row = con.execute("SELECT enabled,action FROM rules").fetchone()
         assert row["enabled"] == 0 and row["action"] == "draft"
-    assert "Disabled draft" in client.get("/rules").text
+    assert "Disabled" in client.get("/rules").text
 
 
 def test_xss_is_escaped(signed_in):

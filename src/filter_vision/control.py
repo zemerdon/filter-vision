@@ -29,6 +29,10 @@ STATUS_PATH = Path("/var/lib/filter-vision-control/status.json")
 OVERRIDE = Path("/etc/systemd/system/filter-vision-cleaner.timer.d/10-schedule.conf")
 INTERVALS = (5, 10, 15, 20, 30, 60, 120, 240, 360, 720, 1440)
 ACTIONS = ("start", "stop", "restart", "run-now", "set-interval")
+RULE_ACTIONS = ("enable-rule", "disable-rule")
+MANAGED_ACTIONS = ("legacy-enable", "legacy-disable", "legacy-edit", "custom-edit")
+
+
 STATUS_FIELDS = {
     "timer": ("ActiveState", "UnitFileState", "LastTriggerUSec",
               "NextElapseUSecRealtime"),
@@ -108,11 +112,13 @@ def _bounded_status(path: Path = STATUS_PATH) -> dict:
         if not isinstance(result, dict) or result.get("state") not in (
                 "success", "failed", "processing"):
             return {}
+        rule_id = result.get("rule_id")
         return {
             "state": result["state"],
             "action": str(result.get("action", ""))[:32],
             "detail": str(result.get("detail", ""))[:180],
             "updated_at": str(result.get("updated_at", ""))[:40],
+            "rule_id": rule_id if type(rule_id) is int and 0 < rule_id < 2**63 else None,
         }
     except (OSError, ValueError, UnicodeError):
         return {}
@@ -154,6 +160,136 @@ def request_control(data_dir: Path, action: str, interval: int | None = None) ->
         return True
     finally:
         os.unlink(temporary)
+
+
+def request_rule_control(data_dir: Path, action: str, rule_id: int,
+                         accounts: list[int], source_sha256: str) -> bool:
+    """Queue exactly one root-managed, per-account rule transition.
+
+    This is not a shell command and cannot change the 22 legacy rules.
+    The root handler revalidates the source SHA, account scopes, legacy
+    approval and draft restrictions before committing root-owned policy.
+    """
+    from .rule_activation import HEX
+    if action not in RULE_ACTIONS:
+        raise ControlError("Unsupported rule action")
+    if (type(rule_id) is not int or not 1 <= rule_id < 2**63
+            or type(accounts) is not list or not accounts or len(accounts) > 2
+            or len(set(accounts)) != len(accounts)
+            or any(type(i) is not int or i not in (1, 2) for i in accounts)
+            or type(source_sha256) is not str or not HEX.fullmatch(source_sha256)):
+        raise ControlError("Invalid rule transition request")
+    payload = json.dumps({
+        "schema": 2, "action": action, "rule_id": rule_id,
+        "accounts": sorted(accounts), "source_sha256": source_sha256,
+    }, separators=(",", ":")).encode()
+    fd, temporary = tempfile.mkstemp(prefix=".rule-request.", dir=data_dir)
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write(payload)
+            out.flush()
+            os.fsync(out.fileno())
+        os.chmod(temporary, 0o600)
+        try:
+            os.link(temporary, data_dir / REQUEST, follow_symlinks=False)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        os.unlink(temporary)
+
+
+def request_managed_control(data_dir: Path, action: str, rule_id: int,
+                            fingerprint: str, override: dict | None = None,
+                            *, activate: bool = False) -> bool:
+    """One action, no confirmation UI: send fixed validated metadata to root."""
+    from .managed_rules import HEX, normalize, ManagedError
+    if (action not in MANAGED_ACTIONS or type(rule_id) is not int
+            or not 1 <= rule_id < 2**63 or type(fingerprint) is not str
+            or not HEX.fullmatch(fingerprint) or type(activate) is not bool
+            or ((action.endswith("-edit")) != (override is not None))):
+        raise ControlError("Invalid managed rule operation")
+    if override is not None:
+        try:
+            if type(override) is not dict or set(override) != {
+                    "kind", "field", "pattern", "label"}:
+                raise ControlError("Invalid managed rule fields")
+            override = normalize(
+                override["kind"], override["field"], override["pattern"],
+                override["label"])
+        except ManagedError:
+            raise ControlError("Invalid managed rule matcher") from None
+    payload = json.dumps({
+        "schema": 3, "action": action, "rule_id": rule_id,
+        "source_sha256": fingerprint, "override": override,
+        "activate": activate,
+    }, separators=(",", ":"), ensure_ascii=False).encode()
+    if len(payload) > 1536:
+        raise ControlError("Rule control request too large")
+    fd, temporary = tempfile.mkstemp(prefix=".managed-request.", dir=data_dir)
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write(payload)
+            out.flush()
+            os.fsync(out.fileno())
+        os.chmod(temporary, 0o600)
+        try:
+            os.link(temporary, data_dir / REQUEST, follow_symlinks=False)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        os.unlink(temporary)
+
+
+def _apply_managed_request(data_dir: Path, data: dict) -> str:
+    from .managed_rules import apply_managed, ManagedError
+    from .storage import Store
+    db_path = data_dir / "filter-vision.sqlite3"
+    if db_path.is_symlink() or not db_path.is_file():
+        raise ControlError("Managed rule database unavailable")
+    state = service_status()
+    if state["service"]["ActiveState"] == "unknown" or state["scan_running"]:
+        raise ControlError("Cleaner scan state unavailable or busy; retry rule change")
+    try:
+        store = Store(data_dir)
+        store.audit("root_managed_rule_attempted",
+                    "rule_id=%d action=%s" % (data["rule_id"], data["action"]))
+        result = apply_managed(
+            store, data["action"], data["rule_id"], data["source_sha256"],
+            override=data["override"], activate=data["activate"])
+        store.audit("root_managed_rule_changed",
+                    "rule_id=%d action=%s" % (data["rule_id"], data["action"]))
+        return result
+    except (ManagedError, OSError, ValueError, TypeError):
+        raise ControlError("Protected managed rule change was rejected") from None
+
+
+def _apply_rule_request(data_dir: Path, action: str, rule_id: int,
+                        accounts: list[int], source_sha256: str) -> str:
+    from .rule_activation import apply_approval, ActivationError
+    from .storage import Store
+    db_path = data_dir / "filter-vision.sqlite3"
+    if db_path.is_symlink() or not db_path.is_file():
+        raise ControlError("Rule database unavailable")
+    scanner = service_status()
+    if scanner["service"]["ActiveState"] == "unknown":
+        raise ControlError("Cannot verify cleaner state; rule change rejected")
+    if scanner["scan_running"]:
+        raise ControlError("Cleaner scan is running; retry rule change afterwards")
+    try:
+        store = Store(data_dir)
+        # Persist the attempted transition BEFORE touching root-owned approval
+        # state. A failed audit write must never produce an unlogged deletion
+        # authorization. A second event marks successful completion.
+        store.audit("root_rule_change_attempted",
+                    f"rule_id={rule_id} action={action} accounts={len(accounts)}")
+        text = apply_approval(store, action, rule_id, accounts, source_sha256)
+        store.audit("root_rule_approval_changed",
+                    f"rule_id={rule_id} action={action} accounts={len(accounts)}")
+        return text
+    except (ActivationError, OSError, ValueError, TypeError):
+        raise ControlError("Root rule approval rejected; inspect rule and accounts") from None
 
 
 def _systemctl(*args: str) -> None:
@@ -248,17 +384,20 @@ def _execute(action: str, interval: int | None = None,
 
 
 def _write_status(state: str, action: str, detail: str,
-                  directory: Path = STATUS_PATH.parent):
+                  directory: Path = STATUS_PATH.parent, *, rule_id: int | None = None):
     directory.mkdir(mode=0o750, parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".status.", dir=directory)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as output:
-            json.dump({
+            payload = {
                 "state": state,
                 "action": action[:32],
                 "detail": detail[:180],
                 "updated_at": datetime.now(tz=ZoneInfo("Australia/Brisbane")).isoformat(),
-            }, output)
+            }
+            if rule_id is not None:
+                payload["rule_id"] = rule_id
+            json.dump(payload, output)
             output.write("\n")
             output.flush()
             os.fsync(output.fileno())
@@ -278,36 +417,87 @@ def consume_request(data_dir: Path, *, uid: int, status_dir: Path = STATUS_PATH.
         fd = os.open(request, os.O_RDONLY | os.O_NOFOLLOW)
         meta = os.fstat(fd)
         if (not stat.S_ISREG(meta.st_mode) or meta.st_uid != uid
-                or stat.S_IMODE(meta.st_mode) != 0o600 or meta.st_size > 512):
+                or stat.S_IMODE(meta.st_mode) != 0o600 or meta.st_size > 1536):
             raise ControlError("Unsafe control request")
-        payload = os.read(fd, 513)
-        if len(payload) > 512:
+        payload = os.read(fd, 1537)
+        if len(payload) > 1536:
             raise ControlError("Oversized control request")
         data = json.loads(payload)
-        if (not isinstance(data, dict) or set(data) != {"schema", "action", "minutes"}
-                or type(data["schema"]) is not int or data["schema"] != 1
-                or type(data["action"]) is not str):
+        if not isinstance(data, dict) or type(data.get("schema")) is not int:
             raise ControlError("Invalid control request")
-        action = data["action"]
-        interval = data["minutes"]
-        if action not in ACTIONS:
-            raise ControlError("Unsupported cleaner action")
-        if action == "set-interval":
-            calendar_for(interval)
-        elif interval is not None:
-            raise ControlError("Invalid interval")
+        if data["schema"] == 1:
+            if (set(data) != {"schema", "action", "minutes"}
+                    or type(data["action"]) is not str):
+                raise ControlError("Invalid control request")
+            action, interval = data["action"], data["minutes"]
+            if action not in ACTIONS:
+                raise ControlError("Unsupported cleaner action")
+            if action == "set-interval":
+                calendar_for(interval)
+            elif interval is not None:
+                raise ControlError("Invalid interval")
+        elif data["schema"] == 2:
+            from .rule_activation import HEX
+            if (set(data) != {"schema", "action", "rule_id", "accounts", "source_sha256"}
+                    or data["action"] not in RULE_ACTIONS
+                    or type(data["rule_id"]) is not int
+                    or not 1 <= data["rule_id"] < 2**63
+                    or type(data["accounts"]) is not list
+                    or not data["accounts"]
+                    or len(data["accounts"]) > 2
+                    or any(type(i) is not int or i not in (1, 2)
+                           for i in data["accounts"])
+                    or len(set(data["accounts"])) != len(data["accounts"])
+                    or type(data["source_sha256"]) is not str
+                    or not HEX.fullmatch(data["source_sha256"])):
+                raise ControlError("Invalid rule control request")
+            action, interval = data["action"], None
+        elif data["schema"] == 3:
+            from .managed_rules import HEX, normalize, ManagedError
+            if (set(data) != {"schema", "action", "rule_id", "source_sha256",
+                             "override", "activate"}
+                    or data["action"] not in MANAGED_ACTIONS
+                    or type(data["rule_id"]) is not int or
+                    not 1 <= data["rule_id"] < 2**63
+                    or type(data["source_sha256"]) is not str or
+                    not HEX.fullmatch(data["source_sha256"])
+                    or type(data["activate"]) is not bool
+                    or (data["override"] is not None) != data["action"].endswith("-edit")):
+                raise ControlError("Invalid managed-rule request")
+            if data["override"] is not None:
+                try:
+                    override = data["override"]
+                    if type(override) is not dict or set(override) != {
+                            "kind", "field", "pattern", "label"}:
+                        raise ControlError("Invalid managed rule fields")
+                    normalize(override["kind"], override["field"],
+                              override["pattern"], override["label"])
+                except ManagedError:
+                    raise ControlError("Invalid managed rule matcher") from None
+            action, interval = data["action"], None
+        else:
+            raise ControlError("Unsupported control request schema")
     except (OSError, ValueError, UnicodeError, TypeError) as exc:
         raise ControlError("Invalid or unreadable control request") from None
     finally:
         if fd is not None:
             os.close(fd)
         request.unlink(missing_ok=True)
-    _write_status("processing", action, "Operation in progress", status_dir)
+    def update(state: str, detail: str):
+        if data["schema"] in (2, 3):
+            _write_status(state, action, detail, status_dir, rule_id=data["rule_id"])
+        else:
+            _write_status(state, action, detail, status_dir)
+    update("processing", "Operation in progress")
     try:
-        detail = _execute(action, interval)
-        _write_status("success", action, detail, status_dir)
+        detail = (_apply_rule_request(
+            data_dir, action, data["rule_id"], data["accounts"],
+            data["source_sha256"]) if data["schema"] == 2 else
+            _apply_managed_request(data_dir, data) if data["schema"] == 3 else
+            _execute(action, interval))
+        update("success", detail)
     except ControlError as error:
-        _write_status("failed", action, str(error), status_dir)
+        update("failed", str(error))
         raise
 
 

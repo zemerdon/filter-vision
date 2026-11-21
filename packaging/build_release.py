@@ -16,6 +16,10 @@ def build() -> tuple[Path, Path]:
     digest = DIST / f"filter-vision-{TAG}.sha256"
     # This guest bootstrap is required *inside* the signed application
     # archive, but is no longer a separate publicly advertised installer.
+    import tomllib
+    metadata = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    if metadata.get("project", {}).get("version") != __version__:
+        raise SystemExit("Wheel metadata version does not match application release version")
     inputs = [REPO / "pyproject.toml", REPO / "packaging" / "install.sh",
               REPO / "packaging" / "update-stable.sh",
               REPO / "packaging" / "install-cleaner.sh",

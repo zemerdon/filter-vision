@@ -210,7 +210,7 @@ class Store:
 
     def record_pending_action(self, account_id: int, uid: int,
                               rule_ids: list[int], preview: dict) -> int:
-        if not rule_ids or len(rule_ids) > 22 or not all(
+        if not rule_ids or len(rule_ids) > 88 or not all(
                 type(r) is int and r > 0 for r in rule_ids):
             raise ValueError("Invalid matched rule IDs")
         if not 1 <= uid <= 2**63-1:

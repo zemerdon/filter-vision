@@ -432,6 +432,11 @@ def validate_rule(kind: str, field: str, value: str) -> str:
         "header_contains": {"Feedback-ID"}, "subject_exact": {"Subject"},
     }
     value = value.strip()
+    if kind == "custom_raw_header":
+        if (field != "All raw headers" or not 8 <= len(value) <= 255
+                or any(ord(ch) < 32 or ord(ch) == 127 for ch in value)):
+            raise ValueError("Invalid legacy-compatible raw-header signature")
+        return value
     if kind == "click_destination":
         if field != "HTML click destination":
             raise ValueError("Unsupported rule type/field")

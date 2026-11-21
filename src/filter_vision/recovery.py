@@ -23,7 +23,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 MAGIC = b"FVBK1"
 MAX_ARCHIVE = 64 * 1024 * 1024
 CONFIG_NAMES = {"web.env", "tls.crt", "tls.key", "oauth-clients.json",
-                "cleaner-policy.json", "legacy-offline"}
+                "cleaner-policy.json", "legacy-offline",
+                "extra-rule-approvals.json", "managed-rules.json"}
 DATA_NAMES = {"browser-session.key", "oauth/fernet.key", "activity.key",
               "filter-vision.sqlite3"}
 

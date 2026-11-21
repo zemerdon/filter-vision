@@ -156,8 +156,8 @@ def test_raw_draft_save_is_inert_and_enable_request_rejected(signed_in, app):
         assert con.execute("SELECT COUNT(*) FROM rule_scopes").fetchone()[0] == 0
     rid = row["id"]
     page = client.get("/rules")
-    assert "Analysis-only draft" in page.text
-    assert "legacy-style raw-header" in page.text.lower()
+    assert "Disabled" in page.text
+    assert "Raw Header Contains" in page.text
     assert "Enable…" not in page.text
     before = client.post(f"/rules/{rid}/request", data={
         "csrf": csrf, "operation": "enable", "confirm": "request_review",

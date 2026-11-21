@@ -1,7 +1,8 @@
 """Explicitly gated, legacy-parity, UID-specific Microsoft Junk cleaner.
 
-No blanket EXPUNGE or non-legacy rules. Activation is root-controlled and
-requires an offline legacy-cleaner marker. No app route may write the policy.
+Never blanket-expunge. The original 22 legacy signatures remain immutable.
+Only separate, explicit root-owned per-account approvals may add custom matchers.
+A verified old-cleaner-offline marker remains mandatory.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ import stat
 from pathlib import Path
 
 from .import_legacy import legacy_matches
+from .live_matching import matches as match_custom, bounded_full_message, MatchError
 from .history import MAX_CAPTURE_BYTES, safe_email_preview
 from .oauth import TokenVault, access_token_for
 from .storage import Store
@@ -69,7 +71,9 @@ def load_policy(policy_path=DEFAULT_POLICY, marker=DEFAULT_OFFLINE_MARKER,
     return p
 
 
-def _active_rules(store: Store, account_id: int, policy: dict):
+def _active_rules(store: Store, account_id: int, policy: dict,
+                  *, include_extra: bool = True, extra_policy_path=None,
+                  extra_require_root: bool = True):
     with store.db() as c:
         row = c.execute("SELECT id,username,provider,host,port,folder,interval_minutes,enabled "
                         "FROM accounts WHERE id=?", (account_id,)).fetchone()
@@ -107,6 +111,22 @@ def _active_rules(store: Store, account_id: int, policy: dict):
     # additional drafts are not allowed to join either account's live rules.
     if set(r["id"] for r in scoped) != set(r["id"] for r in approved):
         raise LiveSafetyError("Account scope mismatches approved legacy rules")
+    if include_extra:
+        # Validate immutable imported originals and 44 scopes ABOVE before
+        # using root-owned, recoverable per-rule overrides for effective
+        # enable/disable/edit operations. Neither file is writable by WebUI.
+        from .rule_activation import active_rules, ActivationError, EXTRA_POLICY
+        from .managed_rules import effective_legacy, ManagedError
+        try:
+            effective_originals = effective_legacy(
+                scoped, store, account_id, require_root=extra_require_root)
+            extra = active_rules(
+                store, account_id,
+                path=EXTRA_POLICY if extra_policy_path is None else extra_policy_path,
+                require_root=extra_require_root)
+        except (ActivationError, ManagedError):
+            raise LiveSafetyError("Managed rule approval invalid; refusing live scan") from None
+        return dict(row), effective_originals + extra
     return dict(row), scoped
 
 
@@ -139,7 +159,27 @@ def _scan_live(conn, account_id: int, rules: list[dict], journal=None) -> dict:
         if kind != "OK":
             raise LiveSafetyError("Could not fetch message header; scan halted")
         header = _header_bytes(raw)
-        matched = [r["id"] for r in rules if legacy_matches(header, r["pattern"])]
+        matched = []
+        need_body = any(r["kind"] == "click_destination" for r in rules)
+        for rule in rules:
+            if rule["kind"] == "click_destination":
+                continue
+            try:
+                if match_custom(rule, header):
+                    matched.append(rule["id"])
+            except MatchError:
+                raise LiveSafetyError("Approved header matcher failed closed") from None
+        complete_body = None
+        if need_body and not matched:
+            try:
+                complete_body = bounded_full_message(conn, uid)
+                if complete_body is not None:
+                    for rule in rules:
+                        if rule["kind"] == "click_destination" and match_custom(
+                                rule, header, complete_body):
+                            matched.append(rule["id"])
+            except MatchError:
+                raise LiveSafetyError("Approved HTML destination check failed closed") from None
         result["examined"] += 1
         if not matched:
             continue
@@ -151,6 +191,16 @@ def _scan_live(conn, account_id: int, rules: list[dict], journal=None) -> dict:
         kind, verify = conn.uid("FETCH", uid, "(BODY.PEEK[HEADER])")
         if kind != "OK" or _header_bytes(verify) != header:
             raise LiveSafetyError("Message headers changed; refusing delete")
+        if complete_body is not None:
+            # Body-based deletion requires a second *complete*, unchanged
+            # bounded MIME fetch immediately before the UID mutation.
+            try:
+                second = bounded_full_message(conn, uid)
+            except MatchError:
+                raise LiveSafetyError("Cannot recheck HTML body; refusing delete") from None
+            if second is None or hashlib.sha256(second).digest() != hashlib.sha256(
+                    complete_body).digest():
+                raise LiveSafetyError("Message body changed; refusing deletion")
         # Capture a small, non-executable text preview for expandable Activity.
         # Persist an encrypted pending record BEFORE any deletion, so a failed
         # persistence/preview request cannot result in unlogged destruction.
