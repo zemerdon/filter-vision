@@ -262,6 +262,50 @@ def suggestions(samples: list[dict]) -> list[dict]:
                                          rank[x["kind"]], x["value"]))[:100]
 
 
+def coverage_options(samples: list[dict]) -> list[dict]:
+    """Show alternative header-only *draft* strategies, not spam verdicts.
+
+    The small selected sample is not a legitimate-mail control set. Covering
+    every selected email is not evidence the resulting rule set is safe.
+    We deliberately make no changes to the protected live matcher.
+    """
+    if not samples:
+        return []
+    total = len(samples)
+    options = []
+    for kind, name, warning in (
+        ("sender_domain", "Exact sender-domain combination",
+         "Covers every sender on each listed exact domain, including potentially "
+         "legitimate mail. Review scope and benign examples before approval."),
+        ("sender_exact", "Exact sender-address combination",
+         "Narrower than entire domains, but rotating addresses may evade the "
+         "conditions. These are inactive drafts, not active filters."),
+    ):
+        groups: dict[str, set[int]] = defaultdict(set)
+        for i, sample in enumerate(samples):
+            sender = sample.get("sender", "").lower()
+            value = sender.rsplit("@", 1)[-1] if kind == "sender_domain" and "@" in sender else sender
+            try:
+                validate_rule(kind, "From", value)
+            except ValueError:
+                continue
+            groups[value].add(i)
+        if not groups:
+            continue
+        items = [{
+            "kind": kind, "field": "From", "value": value,
+            "count": len(indices), "sample_ids": sorted(indices),
+        } for value, indices in sorted(groups.items(),
+                                        key=lambda pair: (-len(pair[1]), pair[0]))]
+        matched = set().union(*groups.values())
+        options.append({
+            "name": name, "kind": kind, "items": items,
+            "total": total, "count": len(matched), "missed": total - len(matched),
+            "warning": warning, "sample_ids": sorted(matched),
+        })
+    return options
+
+
 def validate_rule(kind: str, field: str, value: str) -> str:
     allowed = {
         "sender_exact": {"From"}, "sender_domain": {"From"},

@@ -170,3 +170,11 @@ input,select,textarea{min-width:0;background:#0b161d;border:1px solid #37505b;pa
 .review-accounts label input,.review-confirm input{flex:none;accent-color:#56cdd1}
 .review-request-form button{margin-top:6px}
 @media(max-width:900px){.review-request-form{min-width:0;max-width:100%}}
+
+/* Local-only select-all and explanatory coverage strategies. */
+.junk-browser-table thead .junk-checkbox{white-space:nowrap;color:var(--text);font-weight:600}
+.coverage-plan{border-top:1px solid var(--line);padding:12px 0}
+.coverage-plan>summary{cursor:pointer;display:flex;align-items:center;flex-wrap:wrap;gap:11px}
+.coverage-plan>p{margin:8px 0 12px}
+.coverage-table td{vertical-align:top}
+.coverage-table .value-cell{overflow-wrap:anywhere}

@@ -22,7 +22,7 @@ PYTHON_BACKEND = SOURCE.split("exec python3 - \"$@\" <<'PY'\n", 1)[1].rsplit("\n
 
 def test_installer_is_syntactically_valid_and_safe():
     from filter_vision import __version__
-    assert __version__ == "0.2.6"
+    assert __version__ == "0.2.7"
     compile(PYTHON_BACKEND, "<embedded-proxmox-provisioner>", "exec")
     menu = UI.read_text()
     for choice in ("Default Install", "Advanced Install", "User Defaults", "Settings"):

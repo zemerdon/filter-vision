@@ -24,7 +24,7 @@ def build() -> tuple[Path, Path]:
               REPO / "packaging" / "proxmox-ui.sh"]
     inputs += sorted(path for path in (REPO / "src").rglob("*")
                      if path.is_file() and "__pycache__" not in path.parts and
-                     path.suffix in {".py", ".html", ".css"})
+                     path.suffix in {".py", ".html", ".css", ".js"})
     if len(inputs) < 8:
         raise SystemExit("Missing expected application files")
     with artifact.open("wb") as raw:

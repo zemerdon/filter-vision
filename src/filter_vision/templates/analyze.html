@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Analyze email{% endblock %}
+{% block extra_head %}<script src="/static/junk-select.js" defer></script>{% endblock %}
 {% macro candidate_row(c, samples, csrf) %}
 <tr>
   <td>
@@ -76,7 +77,11 @@
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <div class="table-wrap">
         <table class="junk-browser-table">
-          <thead><tr><th>Select</th><th>Account</th><th>From</th><th>Subject</th><th>Date</th></tr></thead>
+          <thead><tr><th><label class="junk-checkbox">
+            <input id="junk-select-all" type="checkbox" name="select_all" value="yes"
+                   aria-label="Select all (maximum 20 messages)">
+            <span>Select all</span>
+          </label></th><th>Account</th><th>From</th><th>Subject</th><th>Date</th></tr></thead>
           <tbody>{% for item in catalog %}
             <tr>
               <td><label class="junk-checkbox">
@@ -93,7 +98,7 @@
       </div>
       <div class="analyze-toolbar">
         <button class="btn primary" type="submit">Analyze selected Junk emails</button>
-        <span class="muted small">Up to 20 messages · 10 MiB total</span>
+        <span class="muted small" id="junk-selection-count" role="status" aria-live="polite">Select up to 20 messages · 10 MiB total</span>
       </div>
     </form>
   {% elif catalog_scanned %}
@@ -189,6 +194,45 @@
   </div>
   {% endif %}
 </details>
+{% if coverage_options %}
+<div class="panel coverage-strategies">
+  <h2>Header-only coverage options</h2>
+  <p class="muted">Compare combinations of <strong>individually reviewable</strong> header conditions.
+     Coverage counts refer only to these selected messages, <strong>not detection accuracy</strong>.
+     These are not approved for live deletion.</p>
+  {% for plan in coverage_options %}
+  <details class="coverage-plan" {% if loop.first %}open{% endif %}>
+    <summary><strong>{{ plan.name }}</strong>
+      <span class="pill">{{ plan.count }}/{{ plan.total }} covered</span>
+      <span class="muted small">{{ plan['items']|length }} separate conditions · {{ plan.missed }} missed</span>
+    </summary>
+    <p class="muted small">{{ plan.warning }}</p>
+    <div class="table-wrap">
+      <table class="candidate-table coverage-table">
+        <thead><tr><th>Condition</th><th>Selected coverage</th><th>Action</th></tr></thead>
+        <tbody>{% for item in plan['items'] %}
+          <tr>
+            <td class="value-cell"><strong>{{ item.value }}</strong></td>
+            <td><strong>{{ item.count }}/{{ plan.total }}</strong>
+              <details class="candidate-evidence"><summary>View matching messages</summary>
+                <ul>{% for i in item.sample_ids %}<li>{{ samples[i].subject or samples[i].filename or 'Untitled sample' }}</li>{% endfor %}</ul>
+              </details>
+            </td>
+            <td><form method="post" action="/rules">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <input type="hidden" name="kind" value="{{ item.kind }}">
+              <input type="hidden" name="field" value="{{ item.field }}">
+              <input type="hidden" name="value" value="{{ item.value }}">
+              <button class="btn small-btn" type="submit">Save disabled draft</button>
+            </form></td>
+          </tr>
+        {% endfor %}</tbody>
+      </table>
+    </div>
+  </details>
+  {% endfor %}
+</div>
+{% endif %}
 {% set shared = suggestions|selectattr('shared')|list %}
 {% set individual = suggestions|rejectattr('shared')|list %}
 <div class="panel">
@@ -196,7 +240,9 @@
   <p class="muted">
     Repeated across the selected or uploaded messages, sorted by coverage. These are <strong>patterns in this small sample only</strong>,
     not evidence of a safe deletion rule. The live cleaner currently matches approved header signatures only;
-    HTML link destinations are <strong>analysis-only evidence</strong>.
+    HTML link destinations are <strong>analysis-only evidence</strong> because the protected
+    live cleaner examines approved headers, not message bodies. A shared link alone does
+    not justify permanent deletion; compare narrower draft combinations above.
   </p>
   {% if shared %}
   <div class="table-wrap">

@@ -28,7 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import __version__
-from .analysis import MAX_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES, inspect_eml, suggestions, validate_rule
+from .analysis import MAX_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES, inspect_eml, suggestions, coverage_options, validate_rule
 from .rule_management import (
     RULE_DEFINITIONS, DRAFT_KINDS, RuleManagementError, draft_guard,
     update_draft, duplicate_draft, delete_draft,
@@ -168,7 +168,7 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Content-Security-Policy"] = (
             "default-src 'none'; style-src 'self'; img-src 'self'; "
-            "form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+            "script-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
         )
         if cookie_to_set:
             response.set_cookie(COOKIE, cookie_to_set, httponly=True,
@@ -502,6 +502,7 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
         samples = state["samples"]
         return render(request, "analyze.html", active="analyze", sess=sess,
                       samples=samples, suggestions=suggestions(samples) if samples else [],
+                      coverage_options=coverage_options(samples),
                       catalog=state["catalog"], catalog_scanned=state["catalog_scanned"],
                       connected_accounts=connected_junk_accounts(),
                       manual_fields=FIELD_OPTIONS, manual_operators=OPERATORS,
@@ -576,16 +577,22 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
 
     @app.post("/analyze/junk/select", response_class=HTMLResponse)
     def analyze_selected_junk(request: Request, csrf: str = Form(""),
-                              selected: list[str] = Form([])):
+                              selected: list[str] = Form([]),
+                              select_all: str = Form("")):
         sess, denial = guard(request)
         if denial:
             return denial
         if not valid_csrf(sess, csrf):
             return invalid_csrf()
+        catalog = app.state.analysis_memory.read(sess["csrf"])["catalog"]
+        # Without JS the master checkbox still works, capped to 20 UIDs.
+        if select_all == "yes":
+            selected = [row["ref"] for row in catalog[:MAX_SELECTED]]
+        elif select_all:
+            return analyze_page(request, sess, error="Invalid selection option", status=400)
         if not 1 <= len(selected) <= MAX_SELECTED or len(set(selected)) != len(selected):
             return analyze_page(request, sess, error="Select 1–20 distinct Junk messages",
                                 status=400)
-        catalog = app.state.analysis_memory.read(sess["csrf"])["catalog"]
         choices = {row["ref"]: row for row in catalog}
         if any(ref not in choices for ref in selected):
             return analyze_page(request, sess, error="Selection expired. Scan Junk again.",

@@ -128,7 +128,9 @@ The current .eml analyzer accepts **up to 20 files**, **2 MiB per file**, **10 M
 
 ## Read-only Junk analysis and manual evaluation
 
-On Analyze Email, select **Scan Junk folders** to list the latest 40 Junk messages from each connected Microsoft account. Choose up to 20 messages across accounts, then select **Analyze selected Junk emails**. You can still upload .eml samples instead.
+On Analyze Email, select **Scan Junk folders** to list the latest 40 Junk messages from each connected Microsoft account. Use **Select all** to select up to the first 20 messages (or select specific messages manually), then choose **Analyze selected Junk emails**. You can still upload .eml samples instead.
+
+The **Header-only coverage options** section compares exact sender-domain combinations against narrower exact sender-address combinations, showing how many selected emails each condition covers, which emails match, and which remain uncovered. Each condition can be saved only as a disabled, unscoped draft, not activated for deletion. A separate **Shared campaign evidence** section explains why links found in HTML are analysis-only despite possibly covering all selected samples: the root-approved live cleaner matches headers, not email bodies. Coverage on selected spam examples is not a measurement of false-positive risk.
 
 Switch to **Manual evaluation** and choose a field (From address/domain, Subject, Reply-To, Return-Path, a named header, any header or HTML clickable destination) and a comparison (exact, contains, starts with, ends with or literal * wildcard). A pattern such as *hockey.com can show 2/4 matched and the exact matched and missed messages. It is read-only, never enables deletion and does not save a rule. Broad patterns can match legitimate mail.
 
