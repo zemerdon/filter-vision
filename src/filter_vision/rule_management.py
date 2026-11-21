@@ -18,6 +18,10 @@ RULE_DEFINITIONS = (
     ("header_exact", "X-Relaying-Domain", "Exact X-Relaying-Domain header"),
     ("header_contains", "Feedback-ID", "Feedback-ID campaign marker"),
     ("subject_exact", "Subject", "Exact subject"),
+    ("click_destination", "HTML click destination",
+     "HTML click hostname — analysis only (cannot be enabled)"),
+    ("raw_header_contains", "All raw headers",
+     "Raw-header substring — legacy matching evidence (review-only)"),
 )
 DEFINITION_CODES = {f"{kind}:{field}": (kind, field)
                     for kind, field, _ in RULE_DEFINITIONS}

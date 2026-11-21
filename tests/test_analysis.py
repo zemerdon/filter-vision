@@ -132,7 +132,7 @@ def test_shared_click_destination_outweighs_rotating_senders():
     assert found[0]["value"] == "promo.example.com"
     assert found[0]["count"] == 4
     assert found[0]["sample_ids"] == [0, 1, 2, 3]
-    assert not found[0]["can_save"]  # Not a supported LIVE header rule.
+    assert found[0]["can_save"]  # Can only save an analysis-only disabled draft.
     assert found[1]["kind"] == "sender_domain"
     assert found[1]["value"] == "mailer.copper-branch.com"
     assert found[1]["count"] == 2 and found[1]["can_save"]
@@ -173,17 +173,23 @@ def test_ui_shared_evidence_and_no_unsupported_body_rule_saved(signed_in, app):
     assert "i.imgur.com" not in response.text
     assert "gmailapi.google.com" not in response.text
     assert "No deposit required" in response.text
-    # Submitting an analysis-only kind directly is refused as well.
-    assert client.post("/rules", data={
+    # HTML link is now saveable, but only as an inactive review-only draft.
+    saved = client.post("/rules", data={
         "csrf": csrf, "kind": "click_destination",
         "field": "HTML click destination", "value": "promo.example.com",
-    }).status_code == 400
+    }, follow_redirects=False)
+    assert saved.status_code == 303
+    assert "Warning: this HTML link rule is analysis-only" in response.text
+    assert "Save disabled draft" in response.text
     assert client.post("/rules", data={
         "csrf": csrf, "kind": "sender_suffix_evidence",
         "field": "From domain ending", "value": "*hockey.com",
     }).status_code == 400
     with app.state.store.db() as con:
-        assert con.execute("SELECT COUNT(*) FROM rules").fetchone()[0] == 0
+        row = con.execute("SELECT * FROM rules").fetchone()
+        assert row["kind"] == "click_destination"
+        assert row["enabled"] == 0 and row["action"] == "draft"
+        assert con.execute("SELECT COUNT(*) FROM rule_scopes").fetchone()[0] == 0
 
 
 def test_offline_parser_never_fetches_or_executes_html(monkeypatch):
@@ -233,13 +239,23 @@ def test_html_markup_or_subject_cannot_inject_active_content(signed_in):
     assert "&lt;img src=x" in response.text
 
 
-def test_unsupported_body_kinds_rejected_by_edit_validator():
+def test_review_only_kinds_accept_drafts_but_not_unsafe_rules():
     from filter_vision.rule_management import RuleManagementError, parse_edit
     import pytest
+    kind, field, value, label = parse_edit(
+        "click_destination:HTML click destination", "promo.example.com", "Campaign link")
+    assert (kind, field, value, label) == (
+        "click_destination", "HTML click destination", "promo.example.com", "Campaign link")
+    assert validate_rule("raw_header_contains", "All raw headers",
+                         "7418:888112:posti") == "7418:888112:posti"
+    for pattern in ("SCL: 9", "spf=pass", "marketing", "abc", "x" * 155):
+        with pytest.raises(ValueError):
+            validate_rule("raw_header_contains", "All raw headers", pattern)
+    for pattern in ("https://promo.example.com/path", "*.example.com", "localhost"):
+        with pytest.raises(ValueError):
+            validate_rule("click_destination", "HTML click destination", pattern)
     with pytest.raises(RuleManagementError):
-        parse_edit("click_destination:HTML click destination", "promo.example.com", "Candidate")
-    with pytest.raises(ValueError):
-        validate_rule("click_destination", "HTML click destination", "promo.example.com")
+        parse_edit("sender_suffix_evidence:From domain ending", "*hockey.com", "No")
 
 
 

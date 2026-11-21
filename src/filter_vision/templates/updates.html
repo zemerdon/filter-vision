@@ -2,38 +2,50 @@
 {% block title %}Updates{% endblock %}
 {% block extra_head %}{% if request_pending or update_status.state in ["checking","downloading","applying"] or restart_pending %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
 {% block content %}
-<div class="heading"><div><p class="eyebrow">RELEASE MANAGEMENT</p><h1>Updates</h1><p class="muted">GitHub stable releases only. There is no develop update channel.</p></div><span class="pill">STABLE</span></div>
-<div class="stats two">
-<div class="panel stat"><span>INSTALLED VERSION</span><strong>v{{ version }}</strong><small>Running WebUI version (rechecked after service restart)</small></div>
-<div class="panel stat"><span>LATEST GITHUB STABLE</span><strong>{% if latest.tag %}{{ latest.tag }}{% else %}Not checked{% endif %}</strong><small>{% if latest.is_newer %}Newer stable version found{% elif latest.tag %}No newer version reported{% else %}Check below to query GitHub{% endif %}</small></div>
-</div>
-<div class="panel"><h2>Stable release check</h2>
-<p class="muted">Checks <code>zemerdon/filter-vision</code> for its latest published non-prerelease release. Does not change files or restart services.</p>
-<form method="post" action="/updates/check"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn primary" type="submit">Check for updates</button></form>
-{% if latest.error %}<p class="error">{{ latest.error }}</p>{% endif %}
-{% if latest.tag %}
-  <div class="release-notes"><h3>What changed in {{ latest.tag }}</h3>
-  {% if latest.notes %}<ul class="release-list">
-    {% for entry in latest.notes %}<li>{{ entry }}</li>{% endfor %}
-  </ul>{% else %}<p class="muted small">The publisher has not supplied a changelog for this release.</p>{% endif %}
+<div class="heading"><div><h1>Updates</h1></div></div>
+<div class="panel updates-simple">
+  <div class="update-actions" aria-label="Stable release controls">
+    <form method="post" action="/updates/check">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button class="btn primary" type="submit">Check for updates</button>
+    </form>
+    {% if latest.is_newer and not request_pending and not restart_pending and update_status.state not in ["checking","downloading","applying"] %}
+    <form method="post" action="/updates/apply">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button type="submit" class="btn primary">Update</button>
+    </form>
+    {% else %}
+    <button type="button" class="btn" disabled title="{{ 'Update in progress' if request_pending or restart_pending or update_status.state in ['checking','downloading','applying'] else 'No newer stable release available; check for updates' }}">Update</button>
+    {% endif %}
+    <details class="updates-changelog">
+      <summary class="btn">Changelog</summary>
+      <div class="updates-changelog-content">
+        {% if latest.tag %}
+          <h2>{{ latest.tag }} — release notes</h2>
+          {% if latest.notes %}<ul class="release-list">
+            {% for entry in latest.notes %}<li>{{ entry }}</li>{% endfor %}
+          </ul>{% else %}<p class="muted small">No changelog was supplied for this release.</p>{% endif %}
+        {% else %}
+          <p class="muted small">Choose Check for updates to load the latest stable changelog.</p>
+        {% endif %}
+      </div>
+    </details>
   </div>
-{% endif %}
-</div>
-<div class="panel"><h2>Apply stable update</h2>
-<p class="muted">Only published GitHub <strong>stable</strong> releases are eligible. The updater downloads verified assets, backs up the database, checks the newly running version, and restores the previous release if installation fails.</p>
-{% if request_pending %}<p class="info">Stable update requested. Refreshing status automatically.</p>{% endif %}
-{% if restart_pending %}<p class="info">Update {{ update_status.version }} was installed. The WebUI is still reporting v{{ version }} while it restarts; this page refreshes until the new running version is confirmed.</p>{% endif %}
-{% if update_status.state %}
-<div class="info">Update status: <strong>{{ update_status.state }}</strong>
-{% if update_status.version %}· {{ update_status.version }}{% endif %}
-{% if update_status.detail %}<p>{{ update_status.detail }}</p>{% endif %}
-</div>
-{% endif %}
-{% if latest.is_newer and not request_pending and not restart_pending and update_status.state not in ["checking","downloading","applying"] %}
-<form method="post" action="/updates/apply"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="btn primary">Apply {{ latest.tag }} stable update</button></form>
-{% else %}
-<button type="button" class="btn" disabled>{% if not latest.is_newer %}Check for a newer stable release first{% else %}Update already in progress{% endif %}</button>
-{% endif %}
-<p><a href="/updates">Refresh update status</a></p>
+  {% if latest.error %}<p class="error update-feedback">{{ latest.error }}</p>{% endif %}
+  {% if latest.tag and not latest.error %}
+    <p class="muted small update-feedback">
+      Installed v{{ version }} · Latest {{ latest.tag }} ·
+      {{ "Update available" if latest.is_newer else "Up to date" }}
+    </p>
+  {% else %}
+    <p class="muted small update-feedback">Installed v{{ version }}</p>
+  {% endif %}
+  {% if request_pending %}<p class="info update-feedback">Update requested. Refreshing status automatically.</p>{% endif %}
+  {% if restart_pending %}<p class="info update-feedback">The update was installed, but this WebUI is still running v{{ version }} while it restarts. Refreshing status automatically.</p>{% endif %}
+  {% if update_status.state %}
+    {% if update_status.state in ["checking","downloading","applying","failed"] or request_pending %}
+    <p class="info update-feedback">Update {{ update_status.state }}{% if update_status.version %} · {{ update_status.version }}{% endif %}{% if update_status.detail %} · {{ update_status.detail }}{% endif %}</p>
+    {% endif %}
+  {% endif %}
 </div>
 {% endblock %}

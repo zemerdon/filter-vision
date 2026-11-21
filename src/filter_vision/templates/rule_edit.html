@@ -25,6 +25,12 @@
     or restart the existing root-approved legacy cleaner.
   {% endif %}
 </div>
+{% if rule.kind in ["click_destination", "raw_header_contains"] %}
+<p class="click-draft-warning" role="note">Warning: this is a review-only
+  {{ "HTML click destination" if rule.kind == "click_destination" else "legacy-style raw-header substring" }}.
+  You may edit or duplicate the saved evidence, but it cannot be enabled by the
+  current protected cleaner or cause email deletion.</p>
+{% endif %}
 <div class="panel rule-edit-panel">
   <form method="post" action="{{ editor_action }}" class="rule-edit-form">
     <input type="hidden" name="csrf" value="{{ csrf }}">

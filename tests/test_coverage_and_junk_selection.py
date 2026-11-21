@@ -20,8 +20,11 @@ def test_six_message_four_domain_strategy_and_one_shared_link():
     samples=six_samples()
     shared=suggestions(samples)
     top=next(s for s in shared if s["kind"]=="click_destination")
-    assert top["count"] == 6 and top["can_save"] is False
-    domains, addresses=coverage_options(samples)
+    assert top["count"] == 6 and top["can_save"] is True
+    plans=coverage_options(samples)
+    assert plans[0]["kind"]=="compact"
+    assert plans[0]["count"]==6 and plans[0]["missed"]==0
+    domains, addresses=plans[1:]
     assert domains["kind"]=="sender_domain"
     assert (domains["count"],domains["total"],domains["missed"])==(6,6,0)
     assert len(domains["items"])==4
@@ -41,6 +44,7 @@ def test_no_or_invalid_sender_not_assumed_covered():
     plan=coverage_options(samples)
     assert plan[0]["count"]==4 and plan[0]["missed"]==2
     assert plan[1]["count"]==4 and plan[1]["missed"]==2
+    assert plan[2]["count"]==4 and plan[2]["missed"]==2
     assert coverage_options([])==[]
 
 

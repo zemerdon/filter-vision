@@ -154,6 +154,14 @@ def test_live_account_requires_exact_import_approved_digest_and_scopes(tmp_path,
         c.execute("INSERT INTO rules(id,label,kind,field,pattern,enabled,action,created_at) "
                   "VALUES(23,'Safe new draft','sender_domain','from',"
                   "'unapproved.example.invalid',0,'draft',2)")
+        # v0.2.8 additionally allows only INERT review-only header/body
+        # analysis drafts. Neither may become a live matcher or expand scope.
+        c.execute("INSERT INTO rules(id,label,kind,field,pattern,enabled,action,created_at) "
+                  "VALUES(24,'Read only raw fragment','raw_header_contains','All raw headers',"
+                  "'synthetic-2026-campaign-marker',0,'draft',2)")
+        c.execute("INSERT INTO rules(id,label,kind,field,pattern,enabled,action,created_at) "
+                  "VALUES(25,'Read only HTML link','click_destination','HTML click destination',"
+                  "'synthetic.example.invalid',0,'draft',2)")
     repeat=run_live_account(store,1,connector=LiveIMAP,
                             policy_path=policy,marker=marker,require_root=False)
     assert repeat["deleted"] == 1

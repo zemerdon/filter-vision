@@ -89,7 +89,7 @@ The first certificate is self-signed; an initial browser warning is expected. Re
 | **Activity & statistics** | Readable server-local timestamps, total scans/examined/matched/deleted counts, failures and confirmed per-rule filtering counts |
 | **Expandable filtered emails** | Future confirmed matches show exact applied rules and encrypted text-only previews, with no attachments or active HTML |
 | **Activity settings** | Show 25, 50, 100, 250 or 500 recent records; full audit statistics remain retained |
-| **Updates** | In-app GitHub stable release check, readable bullet-point changelog and actual running-version verification |
+| **Updates** | Three compact controls: Check for updates, Update and a collapsed expandable Changelog |
 | **Recovery** | Encrypted full-state backup including the private activity decryption key, with verified staging restore through protected server tooling |
 
 ### Designed to avoid false positives
@@ -119,7 +119,7 @@ Filter Vision has seven main pages:
 | **Analyze Email** | Read-only scan connected Microsoft Junk folders or upload .eml samples; select emails, manually test headers and wildcards, view matched/missed results and save only inactive supported drafts |
 | **Rules** | Edit/duplicate drafts; prepare protected-rule replacements, request Enable/Disable for specified accounts, review/cancel pending requests (no automatic live activation) |
 | **Activity** | Scan and filtering statistics, per-rule effectiveness, readable server time and expandable text-only matched-message details |
-| **Updates** | Check/apply verified GitHub stable releases, read the in-app bullet changelog and see the actual running version |
+| **Updates** | Check for updates, Update when newer stable exists, and expand Changelog on demand |
 | **Settings** | Timer status, scan interval, Activity display length and cleaner Start/Stop/Restart with a clearly separated Run Now confirmation |
 
 The current .eml analyzer accepts **up to 20 files**, **2 MiB per file**, **10 MiB total**; it does not automatically activate filtering.
@@ -130,7 +130,9 @@ The current .eml analyzer accepts **up to 20 files**, **2 MiB per file**, **10 M
 
 On Analyze Email, select **Scan Junk folders** to list the latest 40 Junk messages from each connected Microsoft account. Use **Select all** to select up to the first 20 messages (or select specific messages manually), then choose **Analyze selected Junk emails**. You can still upload .eml samples instead.
 
-The **Header-only coverage options** section compares exact sender-domain combinations against narrower exact sender-address combinations, showing how many selected emails each condition covers, which emails match, and which remain uncovered. Each condition can be saved only as a disabled, unscoped draft, not activated for deletion. A separate **Shared campaign evidence** section explains why links found in HTML are analysis-only despite possibly covering all selected samples: the root-approved live cleaner matches headers, not email bodies. Coverage on selected spam examples is not a measurement of false-positive risk.
+The **Header-only coverage options** section uses the same literal, case-insensitive raw-header substring matching logic as the original cleaner, alongside exact campaign fields, sender domains and sender addresses. It searches a bounded set of uncommon, non-sensitive headers for stable campaign fragments (including repeated portions of changing IDs), then proposes a **compact combination with the fewest conditions found**. It shows matched messages, uncovered messages, and a note when a bounded heuristic was used instead of a proven minimum among the generated candidates. Common Microsoft transit/authentication/spam-score headers are deliberately excluded from automatic suggestions.
+
+All suggested conditions save as **disabled, unscoped drafts only**, not as live deletion rules. Shared HTML click hostnames may now also be saved as **analysis-only drafts**, with a yellow warning immediately below the action; a saved link rule cannot be enabled by the protected header-only cleaner. A common link among the selected spam samples is not evidence of safety on legitimate messages. The existing 22 root-approved signatures and account scopes are unaffected by analysis or draft saves.
 
 Switch to **Manual evaluation** and choose a field (From address/domain, Subject, Reply-To, Return-Path, a named header, any header or HTML clickable destination) and a comparison (exact, contains, starts with, ends with or literal * wildcard). A pattern such as *hockey.com can show 2/4 matched and the exact matched and missed messages. It is read-only, never enables deletion and does not save a rule. Broad patterns can match legitimate mail.
 
@@ -174,7 +176,7 @@ OAuth tokens are stored encrypted. The WebUI uses signed browser cookies, CSRF/O
 
 ## 🔄 Stable updates
 
-In the WebUI, open **Updates → Check for updates**, then **Apply** when a newer stable release is available.
+On **Updates**, choose **Check for updates**; when a newer stable release is available, **Update** becomes available. Choose **Changelog** to expand the release notes below the three controls. The changelog is collapsed by default.
 
 There is **no develop update channel**. The updater checks verified release assets, takes a database snapshot, installs the new version and verifies service health. A rollback is attempted on failure, but full update-failure injection testing remains on the roadmap. Maintain your own protected encrypted backups.
 

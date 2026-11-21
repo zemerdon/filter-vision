@@ -1,8 +1,8 @@
 """Bounded offline email evidence analysis; never render or fetch remote content.
 
-Headers produce draftable matching candidates. HTML links are parsed locally
-ONLY as explanatory campaign evidence; the live header-only cleaner cannot
-delete using them. Message bodies are never retained.
+Headers produce draftable matching candidates. HTML links are parsed locally,
+and their hostnames can be saved as disabled review-only drafts. The live
+header-only cleaner cannot delete using HTML link destinations. Message bodies are never retained.
 """
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from email.utils import parseaddr
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 from .manual_eval import normalized_headers
+from .legacy_fingerprints import raw_evidence, fingerprint_candidates
 
 MAX_FILES = 20
 MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -144,15 +145,18 @@ def inspect_eml(filename: str, data: bytes) -> dict:
         "relaying": [x.strip() for x in headers.get("x-relaying-domain", [])],
         "click_hosts": _click_destinations(data),
         "manual_headers": normalized_headers(message),
+        # Up to 12 KiB of uncommon original raw-header lines only, held
+        # in the existing 15-minute bounded RAM cache; no MIME/body retained.
+        "raw_header_evidence": raw_evidence(header),
     }
 
 
 def suggestions(samples: list[dict]) -> list[dict]:
     """Rank shared evidence ahead of one-message guesses.
 
-    The return object intentionally distinguishes header candidates that can
-    become inert drafts from body-link campaign evidence that cannot. Neither
-    category enables a destructive action.
+    Header and link-host candidates can be saved only as inactive drafts.
+    Body-link drafts cannot even request enablement. Neither category
+    authorizes a destructive action.
     """
     grouped: dict[tuple[str, str, str], set[int]] = defaultdict(set)
     for index, sample in enumerate(samples):
@@ -223,14 +227,19 @@ def suggestions(samples: list[dict]) -> list[dict]:
                 grouped[("sender_suffix_evidence", "From domain ending", pattern)] = matched
 
     review = {
+        "raw_header_contains": ("Legacy raw-header substring · review carefully", True,
+                                "Uses the original cleaner's case-insensitive literal "
+                                "substring test anywhere in the retained headers. "
+                                "A match can include legitimate messages; disabled draft "
+                                "only, not deletion approval."),
         "sender_suffix_evidence": ("Broad wildcard · review carefully", False,
                                    "Distinct sender domains share this text ending. "
                                    "This is NOT a common owned parent domain. A wildcard "
                                    "also matches unrelated legitimate domains; "
                                    "analysis-only, not a deletion rule."),
-        "click_destination": ("Shared campaign link", False,
-                              "Offline HTML link evidence only. The live cleaner "
-                              "does not match message bodies; not a deletion rule."),
+        "click_destination": ("Shared campaign link · review only", True,
+                              "HTML body hostname evidence only. The live cleaner "
+                              "cannot match or delete using body links."),
         "header_contains": ("Review campaign marker", True,
                             "Check whether this precise header marker also occurs in legitimate mail."),
         "header_exact": ("Review sending header", True,
@@ -242,9 +251,9 @@ def suggestions(samples: list[dict]) -> list[dict]:
         "subject_exact": ("Fragile subject", True,
                           "Subjects are easy to change and may repeat in legitimate mail."),
     }
-    rank = {"click_destination": 0, "header_contains": 1, "header_exact": 2,
-            "sender_domain": 3, "sender_suffix_evidence": 4,
-            "sender_exact": 5, "subject_exact": 6}
+    rank = {"raw_header_contains": 0, "click_destination": 1,
+            "header_contains": 2, "header_exact": 3, "sender_domain": 4,
+            "sender_suffix_evidence": 5, "sender_exact": 6, "subject_exact": 7}
     result = []
     for (kind, field, value), indices in grouped.items():
         if kind == "click_destination" and len(indices) < 2:
@@ -258,8 +267,114 @@ def suggestions(samples: list[dict]) -> list[dict]:
             "can_save": can_save, "shared": len(indices) >= 2,
             "sample_ids": sorted(indices),
         })
+    result.extend(fingerprint_candidates(samples))
     return sorted(result, key=lambda x: (-x["count"],
-                                         rank[x["kind"]], x["value"]))[:100]
+                                         rank[x["kind"]], x["value"]))[:160]
+
+
+def compact_header_plan(samples: list[dict], candidates: list[dict]) -> dict | None:
+    """Bounded set-cover optimizer: fewest observed-sample conditions first.
+
+    Coverage is measured against selected *spam samples only*. It is NOT a
+    sensitivity/precision estimate, does not imply safety and never changes
+    approved live deletion. Exact DP has a memory ceiling; fallback is clearly
+    labelled heuristic, not a claim of global optimum.
+    """
+    if not 1 <= len(samples) <= 20:
+        return None
+    total = len(samples)
+    permitted = {"raw_header_contains", "header_contains", "header_exact",
+                 "sender_domain", "sender_exact", "subject_exact"}
+    preference = {"header_exact": 1, "header_contains": 2,
+                  "sender_exact": 3, "raw_header_contains": 4,
+                  "sender_domain": 5, "subject_exact": 7}
+    # A candidate set is valid only when the offline detector itself found
+    # it in the selected sample, and it passes the ordinary disabled-draft
+    # validator. No linked-body or speculative wildcard candidate enters.
+    by_mask = {}
+    for cand in candidates:
+        if cand["kind"] not in permitted or not cand.get("can_save"):
+            continue
+        try:
+            validate_rule(cand["kind"], cand["field"], cand["value"])
+        except ValueError:
+            continue
+        indices = cand.get("sample_ids", [])
+        if not all(isinstance(i, int) and 0 <= i < total for i in indices):
+            continue
+        mask = sum(1 << i for i in set(indices))
+        if not mask:
+            continue
+        score = (preference[cand["kind"]], -len(cand["value"]), cand["value"])
+        if mask not in by_mask or score < by_mask[mask][0]:
+            by_mask[mask] = (score, cand)
+    if not by_mask:
+        return None
+    all_masks = sorted(((mask, item) for mask, (_, item) in by_mask.items()),
+                       key=lambda x: (-x[0].bit_count(), preference[x[1]["kind"]],
+                                      -len(x[1]["value"]), x[1]["value"]))
+    max_covered = 0
+    for mask, _ in all_masks:
+        max_covered |= mask
+
+    # Prefer an optimal number of rules if we can explore all reachable
+    # coverage masks under a bounded 16K-state limit.
+    frontier = {0: (0, 0, ())}
+    complete = True
+    for i, (mask, cand) in enumerate(all_masks):
+        snapshot = list(frontier.items())
+        if len(snapshot) > 16000:
+            complete = False
+            break
+        for previous, (count, risk, path) in snapshot:
+            next_mask = previous | mask
+            if next_mask == previous:
+                continue
+            option = (count + 1, risk + preference[cand["kind"]], path + (i,))
+            if next_mask not in frontier or option[:2] < frontier[next_mask][:2]:
+                frontier[next_mask] = option
+    if complete and max_covered in frontier:
+        path = frontier[max_covered][2]
+    else:
+        # Deterministic bounded greedy fallback; no unsupported optimality claim.
+        uncovered = max_covered
+        path = []
+        while uncovered:
+            options = [(int((mask & uncovered).bit_count()), -preference[cand["kind"]],
+                        len(cand["value"]), -i, i)
+                       for i, (mask, cand) in enumerate(all_masks)
+                       if mask & uncovered]
+            if not options:
+                break
+            index = max(options)[-1]
+            path.append(index)
+            uncovered &= ~all_masks[index][0]
+        complete = False
+    selected = [all_masks[i][1] for i in path]
+    covered = 0
+    for i in path:
+        covered |= all_masks[i][0]
+    return {
+        "name": "Fewest header conditions found",
+        "kind": "compact",
+        "items": [{
+            "kind": c["kind"], "field": c["field"], "value": c["value"],
+            "count": c["count"], "sample_ids": c["sample_ids"],
+        } for c in selected],
+        "total": total, "count": covered.bit_count(),
+        "missed": total - covered.bit_count(),
+        "sample_ids": [i for i in range(total) if covered & (1 << i)],
+        "exact": complete,
+        "warning": (
+            "Exact minimum among the generated valid candidates for these selected "
+            "messages; not a false-positive safety assessment. Each rule is an "
+            "independent, disabled, unscoped draft. Legacy raw-header fragments "
+            "can match in ANY email header, including unrelated mail."
+            if complete else
+            "Bounded coverage heuristic: a compact combination, not a proven "
+            "minimum. Test against legitimate mail before considering any "
+            "future separately approved live rule."),
+    }
 
 
 def coverage_options(samples: list[dict]) -> list[dict]:
@@ -273,6 +388,9 @@ def coverage_options(samples: list[dict]) -> list[dict]:
         return []
     total = len(samples)
     options = []
+    optimized = compact_header_plan(samples, suggestions(samples))
+    if optimized:
+        options.append(optimized)
     for kind, name, warning in (
         ("sender_domain", "Exact sender-domain combination",
          "Covers every sender on each listed exact domain, including potentially "
@@ -308,11 +426,21 @@ def coverage_options(samples: list[dict]) -> list[dict]:
 
 def validate_rule(kind: str, field: str, value: str) -> str:
     allowed = {
+        "raw_header_contains": {"All raw headers"},
         "sender_exact": {"From"}, "sender_domain": {"From"},
         "header_exact": {"X-VMTA-Source", "X-Relaying-Domain"},
         "header_contains": {"Feedback-ID"}, "subject_exact": {"Subject"},
     }
     value = value.strip()
+    if kind == "click_destination":
+        if field != "HTML click destination":
+            raise ValueError("Unsupported rule type/field")
+        if (not 4 <= len(value) <= 253
+                or any(ord(char) < 33 or ord(char) > 126 for char in value)
+                or "*" in value or "/" in value or ":" in value
+                or _destination_host("https://" + value) != value.lower()):
+            raise ValueError("Invalid HTML click hostname for review-only draft")
+        return value.lower()
     if field not in allowed.get(kind, set()):
         raise ValueError("Unsupported rule type/field")
     if not 3 <= len(value) <= 255 or any(c in value for c in "\r\n\x00"):
@@ -323,4 +451,8 @@ def validate_rule(kind: str, field: str, value: str) -> str:
         raise ValueError("Invalid domain")
     if kind == "header_contains" and len(value) < 8:
         raise ValueError("Campaign marker too short")
+    if kind == "raw_header_contains":
+        from .legacy_fingerprints import _meaningful
+        if len(value) > 150 or not _meaningful(value):
+            raise ValueError("Raw-header fragment too broad for a review-only draft")
     return value

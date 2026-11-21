@@ -6,7 +6,7 @@
   <td>
     <strong>{{ "Shared click destination" if c.kind == "click_destination" else "Shared domain ending" if c.kind == "sender_suffix_evidence" else c.kind.replace('_',' ')|title }}</strong>
     {% if c.kind == "click_destination" %}
-      <p class="muted small">BODY EVIDENCE · NOT A LIVE RULE</p>
+      <p class="muted small">BODY EVIDENCE · REVIEW-ONLY DRAFT</p>
     {% elif c.kind == "sender_suffix_evidence" %}
       <p class="muted small">DOMAIN-ENDING HYPOTHESIS · NOT A LIVE RULE</p>
     {% endif %}
@@ -36,6 +36,18 @@
       <input type="hidden" name="value" value="{{ c.value }}">
       <button class="btn small-btn" type="submit">Save disabled draft</button>
     </form>
+    {% if c.kind == "click_destination" %}
+      <p class="click-draft-warning" role="note">
+        Warning: this HTML link rule is analysis-only. Saving does not enable
+        filtering or deletion; the live cleaner cannot match email-body links.
+      </p>
+    {% elif c.kind == "raw_header_contains" %}
+      <p class="click-draft-warning" role="note">
+        Warning: this legacy-style raw-header fragment could also occur in
+        legitimate mail. It matches ANY raw header, so saving only creates
+        an inactive draft, never live deletion approval.
+      </p>
+    {% endif %}
   {% else %}
     <span class="muted small">Analysis only</span>
   {% endif %}
@@ -199,12 +211,15 @@
   <h2>Header-only coverage options</h2>
   <p class="muted">Compare combinations of <strong>individually reviewable</strong> header conditions.
      Coverage counts refer only to these selected messages, <strong>not detection accuracy</strong>.
-     These are not approved for live deletion.</p>
+     The compact plan uses the original cleaner's literal, case-insensitive
+     raw-header matcher where possible. These are <strong>disabled drafts only</strong>,
+     not approved live-deletion rules.</p>
   {% for plan in coverage_options %}
   <details class="coverage-plan" {% if loop.first %}open{% endif %}>
     <summary><strong>{{ plan.name }}</strong>
       <span class="pill">{{ plan.count }}/{{ plan.total }} covered</span>
-      <span class="muted small">{{ plan['items']|length }} separate conditions · {{ plan.missed }} missed</span>
+      <span class="muted small">{{ plan['items']|length }} separate conditions · {{ plan.missed }} missed
+        {% if plan.kind == "compact" %}· {{ "Exact minimum in generated candidate set" if plan.exact else "Bounded heuristic" }}{% endif %}</span>
     </summary>
     <p class="muted small">{{ plan.warning }}</p>
     <div class="table-wrap">
@@ -224,7 +239,11 @@
               <input type="hidden" name="field" value="{{ item.field }}">
               <input type="hidden" name="value" value="{{ item.value }}">
               <button class="btn small-btn" type="submit">Save disabled draft</button>
-            </form></td>
+            </form>
+            {% if item.kind == "raw_header_contains" %}
+              <p class="click-draft-warning">Warning: raw-header substring matches ANY header.
+                Review against legitimate mail; this is never automatically activated.</p>
+            {% endif %}</td>
           </tr>
         {% endfor %}</tbody>
       </table>
@@ -240,9 +259,10 @@
   <p class="muted">
     Repeated across the selected or uploaded messages, sorted by coverage. These are <strong>patterns in this small sample only</strong>,
     not evidence of a safe deletion rule. The live cleaner currently matches approved header signatures only;
-    HTML link destinations are <strong>analysis-only evidence</strong> because the protected
-    live cleaner examines approved headers, not message bodies. A shared link alone does
-    not justify permanent deletion; compare narrower draft combinations above.
+    Shared HTML click hosts can now be saved as <strong>review-only drafts</strong>, with a yellow
+    warning. The protected live cleaner still matches approved headers, not message bodies:
+    such drafts cannot be enabled or used to delete mail. For now, compare narrower header
+    drafts above for potentially executable conditions.
   </p>
   {% if shared %}
   <div class="table-wrap">

@@ -178,3 +178,21 @@ input,select,textarea{min-width:0;background:#0b161d;border:1px solid #37505b;pa
 .coverage-plan>p{margin:8px 0 12px}
 .coverage-table td{vertical-align:top}
 .coverage-table .value-cell{overflow-wrap:anywhere}
+
+
+/* Compact stable Updates controls and a closed-by-default native changelog. */
+.updates-simple{max-width:1100px}
+.update-actions{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap}
+.update-actions form{margin:0}
+.updates-changelog{position:relative;min-width:115px}
+.updates-changelog>summary{list-style:none;user-select:none}
+.updates-changelog>summary::-webkit-details-marker{display:none}
+.updates-changelog>summary::after{content:" ▾";font-size:12px;color:var(--teal)}
+.updates-changelog[open]>summary::after{content:" ▴"}
+.updates-changelog-content{position:relative;margin-top:12px;padding:15px;background:var(--panel2);border:1px solid var(--line);border-radius:6px;width:min(720px, calc(100vw - 430px));max-width:100%}
+.updates-changelog-content h2{font-size:13px;margin:0 0 8px}
+.update-feedback{margin:14px 0 0}
+@media(max-width:760px){.updates-changelog[open]{flex-basis:100%}.updates-changelog-content{width:100%;min-width:0;max-width:none}}
+
+/* Explicit yellow caution immediately underneath HTML-link draft actions. */
+.click-draft-warning{color:#f3c47a;font-size:11px;line-height:1.6;margin:8px 0 0;max-width:370px}

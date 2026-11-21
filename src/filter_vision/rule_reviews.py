@@ -114,6 +114,13 @@ def queue_review(store, rule_id: int, operation: str,
     with store.db() as con:
         con.execute("BEGIN IMMEDIATE")
         row, scopes = _rule(con, rule_id)
+        # A link-host draft is not an executable header matcher. Even
+        # requesting its activation would falsely imply live support.
+        if operation == "enable" and row["kind"] in (
+                "click_destination", "raw_header_contains"):
+            raise RuleManagementError(
+                "This candidate is review-only; live deletion requires a "
+                "separately verified root-approved matcher and account policy", 409)
         # No active/scoped record is modified. Even editing imported rule
         # #1..#22 only copies its proposed replacement into this table.
         if operation in {"edit", "duplicate"}:
