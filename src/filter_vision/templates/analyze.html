@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Analyze email{% endblock %}
-{% block extra_head %}<script src="/static/junk-select.js" defer></script>{% endblock %}
+{% block extra_head %}<script src="/static/junk-select.js" defer></script><script src="/static/rule-select.js" defer></script>{% if batch_waiting %}<meta http-equiv="refresh" content="2">{% endif %}{% endblock %}
 {% macro candidate_row(c, samples, csrf) %}
 <tr>
   <td>
@@ -29,17 +29,16 @@
   <td><span class="pill">{{ c.risk }}</span><p class="muted small">{{ c.explanation }}</p></td>
   <td>
   {% if c.can_save %}
-    <form method="post" action="/rules">
+    <form method="post" action="/analyze/candidate">
       <input type="hidden" name="csrf" value="{{ csrf }}">
-      <input type="hidden" name="kind" value="{{ c.kind }}">
-      <input type="hidden" name="field" value="{{ c.field }}">
-      <input type="hidden" name="value" value="{{ c.value }}">
-      <button class="btn small-btn" type="submit">Save disabled draft</button>
+      <input type="hidden" name="token" value="{{ c.token }}">
+      <button class="btn small-btn" type="submit">Save draft</button>
     </form>
     {% if c.kind == "click_destination" %}
       <p class="click-draft-warning" role="note">
         Warning: this HTML link rule is analysis-only. Saving does not enable
-        filtering or deletion; the live cleaner cannot match email-body links.
+        filtering or deletion. Enabling an HTML-host rule requires a separate
+        root-approved operation with bounded read-only mailbox preview.
       </p>
     {% elif c.kind == "raw_header_contains" %}
       <p class="click-draft-warning" role="note">
@@ -128,6 +127,19 @@
   </form>
 </details>
 {% if error %}<div class="panel"><p class="error">{{ error }}</p></div>{% endif %}
+{% if saved_count is not none %}
+<div class="panel" role="status">
+  <strong>{{ saved_count }} new disabled draft{{ 's' if saved_count != 1 else '' }} saved.</strong>
+  {% if saved_count == 0 %}<span class="muted">They may already exist.</span>{% endif %}
+  <span class="muted">No rule was enabled or assigned to an account.</span>
+</div>
+{% endif %}
+{% if batch_status %}
+<div class="panel" role="status">
+  <strong>{{ batch_status }}</strong>
+  <p class="muted small">Only root-verified approvals activate Junk deletion rules. Any unapproved drafts remain disabled.</p>
+</div>
+{% endif %}
 {% if samples %}
 <div class="panel">
   <h2>Messages analysed <span class="pill">{{ samples|length }}</span></h2>
@@ -140,7 +152,7 @@
     </table>
   </div>
 </div>
-<details class="panel manual-evaluation" open id="manual-evaluate">
+<details class="panel manual-evaluation" {% if manual_report or manual_input.value %}open{% endif %} id="manual-evaluate">
   <summary>Manual evaluation — test your own header or pattern</summary>
   <p class="muted">Choose a field, enter your own exact text or wildcard, and select Evaluate.
     This uses the {{ samples|length }} messages already selected or uploaded. No additional upload is needed.
@@ -207,39 +219,55 @@
   {% endif %}
 </details>
 {% if coverage_options %}
-<div class="panel coverage-strategies">
+<div class="panel coverage-strategies" id="coverage-strategies">
   <h2>Header-only coverage options</h2>
   <p class="muted">Compare combinations of <strong>individually reviewable</strong> header conditions.
      Coverage counts refer only to these selected messages, <strong>not detection accuracy</strong>.
      The compact plan uses the original cleaner's literal, case-insensitive
-     raw-header matcher where possible. These are <strong>disabled drafts only</strong>,
-     not approved live-deletion rules.</p>
+     raw-header matcher where possible. <strong>Save draft</strong> stores a disabled,
+     unscoped rule. <strong>Enable selected</strong> requests root approval after
+     read-only Junk previews on the already approved accounts; if approved,
+     matching Junk mail may be permanently deleted on a future scan.
+     Coverage of the selected spam samples does not establish false-positive safety.</p>
   {% for plan in coverage_options %}
+  {% set form_id = 'coverage-form-' ~ loop.index %}
   <details class="coverage-plan" {% if loop.first %}open{% endif %}>
     <summary><strong>{{ plan.name }}</strong>
-      <span class="pill">{{ plan.count }}/{{ plan.total }} covered</span>
-      <span class="muted small">{{ plan['items']|length }} separate conditions · {{ plan.missed }} missed
-        {% if plan.kind == "compact" %}· {{ "Exact minimum in generated candidate set" if plan.exact else "Bounded heuristic" }}{% endif %}</span>
+      <span class="pill">{{ plan.count }}/{{ plan.total }} covered by new candidates</span>
+      <span class="muted small">{{ plan['items']|length }} new condition{{ 's' if plan['items']|length != 1 else '' }} · {{ plan.missed }} not covered by these
+        {% if plan.kind == "compact" and not plan.already_saved %}· {{ "Exact minimum in generated candidate set" if plan.exact else "Bounded heuristic" }}{% endif %}
+        {% if plan.already_saved %}· {{ plan.already_saved }} already saved (hidden){% endif %}</span>
     </summary>
-    <p class="muted small">{{ plan.warning }}</p>
+    <p class="muted small">{{ plan.warning }}
+      {% if plan.already_saved %}Coverage shown here counts only the remaining suggestions, not the already-saved conditions.{% endif %}</p>
+    <form id="{{ form_id }}" method="post" action="/analyze/drafts" data-coverage-plan>
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="plan" value="{{ plan.kind }}">
+    </form>
     <div class="table-wrap">
       <table class="candidate-table coverage-table">
-        <thead><tr><th>Condition</th><th>Selected coverage</th><th>Action</th></tr></thead>
+        <thead><tr>
+          <th><label class="junk-checkbox">
+            <input type="checkbox" name="select_all" value="yes" form="{{ form_id }}"
+                   aria-label="Select all new rules in {{ plan.name }}">
+            <span>Select all</span>
+          </label></th>
+          <th>Condition</th><th>Selected coverage</th><th>Action</th>
+        </tr></thead>
         <tbody>{% for item in plan['items'] %}
           <tr>
+            <td><label class="junk-checkbox">
+              <input type="checkbox" name="selected" value="{{ item.token }}" form="{{ form_id }}">
+              <span class="muted small">Select</span>
+            </label></td>
             <td class="value-cell"><strong>{{ item.value }}</strong></td>
             <td><strong>{{ item.count }}/{{ plan.total }}</strong>
               <details class="candidate-evidence"><summary>View matching messages</summary>
                 <ul>{% for i in item.sample_ids %}<li>{{ samples[i].subject or samples[i].filename or 'Untitled sample' }}</li>{% endfor %}</ul>
               </details>
             </td>
-            <td><form method="post" action="/rules">
-              <input type="hidden" name="csrf" value="{{ csrf }}">
-              <input type="hidden" name="kind" value="{{ item.kind }}">
-              <input type="hidden" name="field" value="{{ item.field }}">
-              <input type="hidden" name="value" value="{{ item.value }}">
-              <button class="btn small-btn" type="submit">Save disabled draft</button>
-            </form>
+            <td><button class="btn small-btn" type="submit" name="single"
+                        value="{{ item.token }}" form="{{ form_id }}">Save disabled draft</button>
             {% if item.kind == "raw_header_contains" %}
               <p class="click-draft-warning">Warning: raw-header substring matches ANY header.
                 Review against legitimate mail; this is never automatically activated.</p>
@@ -248,21 +276,28 @@
         {% endfor %}</tbody>
       </table>
     </div>
+    <div class="analyze-toolbar">
+      <button class="btn" type="submit" name="intent" value="save" form="{{ form_id }}">Save selected drafts</button>
+      <button class="btn primary" type="submit" name="intent" value="enable" form="{{ form_id }}">Enable selected</button>
+      <span class="muted small" data-coverage-count="{{ form_id }}" role="status" aria-live="polite">
+        {{ plan['items']|length }} new rules available · none selected
+      </span>
+    </div>
   </details>
   {% endfor %}
 </div>
 {% endif %}
 {% set shared = suggestions|selectattr('shared')|list %}
 {% set individual = suggestions|rejectattr('shared')|list %}
-<div class="panel">
-  <h2>Shared campaign evidence <span class="pill">{{ shared|length }}</span></h2>
+<details class="panel shared-evidence">
+  <summary>Shared campaign evidence <span class="pill">{{ shared|length }}</span></summary>
   <p class="muted">
     Repeated across the selected or uploaded messages, sorted by coverage. These are <strong>patterns in this small sample only</strong>,
-    not evidence of a safe deletion rule. The live cleaner currently matches approved header signatures only;
-    Shared HTML click hosts can now be saved as <strong>review-only drafts</strong>, with a yellow
-    warning. The protected live cleaner still matches approved headers, not message bodies:
-    such drafts cannot be enabled or used to delete mail. For now, compare narrower header
-    drafts above for potentially executable conditions.
+    not evidence of a safe deletion rule. The cleaner matches only root-approved rules, including separately approved bounded HTML-host matchers;
+    Shared HTML click hosts may be saved as <strong>disabled drafts</strong> with a yellow warning.
+    An HTML-host rule can only affect live Junk cleaning if separately enabled under the
+    root-managed policy after bounded preview and MIME recheck.
+    Compare narrower header candidates first to reduce false positives.
   </p>
   {% if shared %}
   <div class="table-wrap">
@@ -274,7 +309,7 @@
   {% else %}
   <p class="empty">No repeatable narrow signal found across these samples. You can review individual alternatives below.</p>
   {% endif %}
-</div>
+</details>
 {% if individual %}
 <details class="panel single-candidates">
   <summary>Individual-message alternatives ({{ individual|length }})</summary>
@@ -291,6 +326,8 @@
 <div class="info">
   <strong>Safety:</strong> common SCL scores, SPF/DKIM authentication results, shared Google/Microsoft relay infrastructure,
   image-hosting domains and generic subject phrases are not safe deletion rules. Saving a permitted candidate
-  creates an <strong>inactive, unscoped draft only</strong>. No live filtering or permanent deletion is enabled here.
+  creates an <strong>inactive, unscoped draft only</strong>. Enabling rules requires
+  an explicit root-controlled operation, and authorized matching Junk messages
+  can then be permanently deleted by the scheduled cleaner.
 </div>
 {% endblock %}

@@ -17,8 +17,8 @@
   {% endfor %}
 </div>
 
-<div class="panel">
-  <h2>Filtering by rule</h2>
+<details class="panel activity-section">
+  <summary>Filtering by rule</summary>
   <p class="muted small">Confirmed deletions recorded with rule IDs since detailed history was enabled. Earlier scans are counted above but cannot be attributed to a particular rule. An email matching two rules counts once per rule here.</p>
   {% if history.per_rule %}
   <div class="table-wrap"><table class="rule-stats-table">
@@ -28,10 +28,10 @@
     {% endfor %}</tbody>
   </table></div>
   {% else %}<p class="empty">No individually recorded confirmed deletions yet. Future matching messages will be listed here.</p>{% endif %}
-</div>
+</details>
 
-<div class="panel">
-  <h2>Recent events</h2>
+<details class="panel activity-section" open>
+  <summary>Recent events</summary>
   <p class="muted small">Showing the newest {{ history.limit }} combined scan, administration and email-filtering records. Change the display limit in <a href="/settings#activity-settings">Settings → Activity</a>. The full audit history remains stored.</p>
   {% if history.uncertain %}<p class="info">{{ history.uncertain }} deletion action(s) have an unconfirmed outcome. Check the mailbox before treating those as deleted.</p>{% endif %}
   {% if history.entries %}
@@ -71,5 +71,5 @@
     </tbody>
   </table></div>
   {% else %}<p class="empty">No activity recorded.</p>{% endif %}
-</div>
+</details>
 {% endblock %}

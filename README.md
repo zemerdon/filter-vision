@@ -82,6 +82,9 @@ The first certificate is self-signed; an initial browser warning is expected. Re
 | **Junk preview** | Read-only IMAP inspection before live filtering |
 | **Email analyzer** | Analyze uploaded .eml samples and suggest narrow header fingerprints |
 | **Rule management** | One-click Edit, Duplicate, Enable and Disable for imported and custom rules, protected root-managed activation and verified status |
+| **Bulk Rules actions** | Per-rule checkboxes and Select all for Delete, Enable, Disable and Duplicate; root verification and protected-rule limits remain in place |
+| **Analyze candidate workflow** | Save drafts without leaving Analyze; hide saved suggestions; select and save or request approval for multiple new rules together |
+| **Collapsible activity and analysis** | Expandable filtering/history, manual evaluation and campaign evidence with clear disclosure indicators |
 | **Legacy-compatible cleaner** | Original 22 signatures retained as a recoverable baseline; protected overrides can edit or disable any imported rule |
 | **Targeted deletion** | Requires IMAP UIDPLUS; UID-specific STORE/EXPUNGE rather than blanket expunge |
 | **Schedule controls** | Status, last/next run, adjustable 5-minute to 24-hour interval |
@@ -129,6 +132,8 @@ The current .eml analyzer accepts **up to 20 files**, **2 MiB per file**, **10 M
 **History and privacy:** Activity defaults to the newest 50 records, configurable to 25–500, and shows readable times in the **server's actual timezone**. Lifetime totals include older aggregate audit records, but per-rule email attribution and expandable encrypted message previews are available **only for future matches logged since v0.2.4**; email previously deleted cannot be reconstructed. The preview retains only bounded safe text, not attachments, scripts or raw HTML. Searchable history, exports and retention controls remain planned.
 
 ## Read-only Junk analysis and manual evaluation
+
+In v0.2.11, **Save draft** returns directly to Analyze, and previously saved candidates are hidden. Header-only coverage plans offer per-rule checkboxes, **Select all**, **Save selected drafts** and **Enable selected**. Activation is requested only after a bounded read-only Junk preview and verified root approval; sample coverage alone is not a false-positive guarantee.
 
 On Analyze Email, select **Scan Junk folders** to list the latest 40 Junk messages from each connected Microsoft account. Use **Select all** to select up to the first 20 messages (or select specific messages manually), then choose **Analyze selected Junk emails**. You can still upload .eml samples instead.
 

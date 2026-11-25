@@ -196,3 +196,69 @@ input,select,textarea{min-width:0;background:#0b161d;border:1px solid #37505b;pa
 
 /* Explicit yellow caution immediately underneath HTML-link draft actions. */
 .click-draft-warning{color:#f3c47a;font-size:11px;line-height:1.6;margin:8px 0 0;max-width:370px}
+
+
+/* Unified explicit expand/collapse arrows on major native disclosure panels. */
+.activity-section>summary,.shared-evidence>summary,
+.manual-evaluation>summary,.analyze-upload-alt>summary,
+.single-candidates>summary,.coverage-plan>summary{
+  display:flex;align-items:center;gap:10px;cursor:pointer;list-style:none;
+  font-size:16px;font-weight:650;color:var(--text)
+}
+.activity-section>summary::-webkit-details-marker,
+.shared-evidence>summary::-webkit-details-marker,
+.manual-evaluation>summary::-webkit-details-marker,
+.analyze-upload-alt>summary::-webkit-details-marker,
+.single-candidates>summary::-webkit-details-marker,
+.coverage-plan>summary::-webkit-details-marker{display:none}
+.activity-section>summary::before,.shared-evidence>summary::before,
+.manual-evaluation>summary::before,.analyze-upload-alt>summary::before,
+.single-candidates>summary::before,.coverage-plan>summary::before{
+  content:"▸";font-size:15px;line-height:1;flex:none;color:var(--teal);
+  display:inline-block;transition:transform .15s ease
+}
+.activity-section[open]>summary::before,.shared-evidence[open]>summary::before,
+.manual-evaluation[open]>summary::before,.analyze-upload-alt[open]>summary::before,
+.single-candidates[open]>summary::before,.coverage-plan[open]>summary::before{
+  transform:rotate(90deg)
+}
+.activity-section[open]>summary,.shared-evidence[open]>summary{margin-bottom:15px}
+.candidate-evidence>summary::marker,.email-expand>summary::marker{color:var(--teal)}
+/* Keep all four row actions aligned as columns, independent of rule status. */
+.rules-table .rule-tools{
+  display:grid;grid-template-columns:repeat(4,minmax(75px,1fr));
+  gap:6px;align-items:stretch;min-width:360px
+}
+.rules-table .rule-tools>*{min-width:0}
+.rules-table .rule-tools .btn{width:100%;height:100%;min-height:34px;padding:5px 8px}
+.rules-table .rule-tools .rule-toggle{grid-column:1}
+.rules-table .rule-tools .rule-edit{grid-column:2}
+.rules-table .rule-tools .rule-duplicate{grid-column:3}
+.rules-table .rule-tools .rule-delete{grid-column:4}
+@media(max-width:740px){
+  .rules-table .rule-tools{min-width:0;width:min(100%,520px);
+    grid-template-columns:repeat(2,minmax(0,1fr))}
+  .rules-table .rule-tools .rule-toggle{grid-column:1;grid-row:1}
+  .rules-table .rule-tools .rule-edit{grid-column:2;grid-row:1}
+  .rules-table .rule-tools .rule-duplicate{grid-column:1;grid-row:2}
+  .rules-table .rule-tools .rule-delete{grid-column:2;grid-row:2}
+}
+
+
+/* Bulk Rules selection in the existing compact dark theme. */
+.rules-bulk-toolbar{display:flex;justify-content:space-between;align-items:center;
+  flex-wrap:wrap;gap:12px;margin:12px 0}
+.rules-bulk-buttons{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.rules-table .rule-select-cell{width:64px}
+.rules-table .rule-select-cell .junk-checkbox{margin:0;display:inline-flex;align-items:center;justify-content:center}
+.rules-table .rule-select-cell input[type=checkbox],
+.rules-table thead input[type=checkbox]{
+  width:17px;height:17px;min-width:17px;accent-color:var(--teal2);cursor:pointer
+}
+.rules-table .rule-tool-placeholder{display:block;min-height:34px}
+.rules-table .rule-tools .rule-toggle,.rules-table .rule-tools .rule-edit,
+.rules-table .rule-tools .rule-duplicate,.rules-table .rule-tools .rule-delete{align-self:stretch}
+@media(max-width:740px){
+  .rules-table .rule-select-cell{width:auto}
+  .rules-table .rule-select-cell::before{content:"Select" !important}
+}

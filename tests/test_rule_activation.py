@@ -707,3 +707,93 @@ def test_encrypted_backup_preserves_managed_root_rule_overrides(tmp_path):
     (config/"managed-rules.json").write_text(json.dumps(payload))
     snapshot=_collect(store.directory,config)
     assert json.loads(snapshot["config/managed-rules.json"])==payload
+
+
+def test_atomic_root_batch_approvals_preserve_original_policy(approved_fixture):
+    store, policy, path = approved_fixture
+    with store.db() as con:
+        selected = [dict(con.execute(
+            "SELECT * FROM rules WHERE id=?", (rid,)).fetchone()) for rid in (24,25)]
+    entries = [{"id": row["id"], "sha256": rule_activation.source_digest(row)}
+               for row in selected]
+    result = rule_activation.apply_batch_approvals(
+        store, entries, [1, 2], path=path, policy_loader=lambda:policy)
+    assert "2 rules enabled" in result
+    loaded = rule_activation.read_approvals(path)
+    assert {a["id"] for a in loaded} == {24,25}
+    assert all(a["accounts"] == [1,2] for a in loaded)
+    with store.db() as con:
+        assert con.execute("SELECT COUNT(*) FROM rule_scopes").fetchone()[0] == 44
+        assert con.execute("SELECT COUNT(*) FROM rules WHERE enabled=1").fetchone()[0] == 0
+    assert len(_active_rules(store,1,policy,extra_policy_path=path)[1]) == 24
+
+
+def test_root_batch_rejects_stale_or_invalid_member_without_partial_write(approved_fixture):
+    store,policy,path=approved_fixture
+    with store.db() as con:
+        rows = [dict(con.execute("SELECT * FROM rules WHERE id=?", (rid,)).fetchone())
+                for rid in (24,25)]
+    entries = [{"id":x["id"],"sha256":rule_activation.source_digest(x)}
+               for x in rows]
+    bad = [entries[0],{**entries[1],"sha256":"0"*64}]
+    with pytest.raises(rule_activation.ActivationError):
+        rule_activation.apply_batch_approvals(
+            store,bad,[1,2],path=path,policy_loader=lambda:policy)
+    assert not path.exists()
+    for request in ([entries[0],entries[0]], [entries[0],{**entries[1],"id":1}]):
+        with pytest.raises(rule_activation.ActivationError):
+            rule_activation.apply_batch_approvals(
+                store,request,[1,2],path=path,policy_loader=lambda:policy)
+    assert not path.exists()
+    with pytest.raises(rule_activation.ActivationError):
+        rule_activation.apply_batch_approvals(
+            store,entries,[3],path=path,policy_loader=lambda:policy)
+    assert not path.exists()
+
+
+def test_control_schema4_batch_request_contract_root_consumer(tmp_path,monkeypatch):
+    items=[{"id":24,"sha256":"a"*64},{"id":25,"sha256":"b"*64}]
+    path=tmp_path/"queue"
+    path.mkdir()
+    batch_id="a"*24
+    assert control.request_batch_enable(path,items,[1,2],batch_id)
+    request=json.loads((path/control.REQUEST).read_text())
+    assert request["schema"]==4 and request["action"]=="enable-batch"
+    assert request["entries"]==items
+    assert not control.request_batch_enable(path,items,[1,2],batch_id)
+    import grp
+    monkeypatch.setattr(grp,"getgrnam",lambda name:grp.getgrgid(os.getgid()))
+    calls=[]
+    monkeypatch.setattr(control,"_apply_batch_request",lambda d,r:
+                        calls.append(r) or "2 rules enabled on 2 account(s)")
+    control.consume_request(path,uid=os.getuid(),status_dir=tmp_path/"status")
+    assert len(calls)==1
+    status=json.loads((tmp_path/"status/status.json").read_text())
+    assert status["batch_id"]==batch_id and status["state"]=="success"
+    assert not (path/control.REQUEST).exists()
+    with pytest.raises(control.ControlError):
+        control.request_batch_enable(path,items+[items[0]],[1,2],"b"*24)
+
+
+def test_control_schema4_rejects_forged_and_oversize_batch(tmp_path,monkeypatch):
+    path=tmp_path/"queue";path.mkdir()
+    import grp
+    monkeypatch.setattr(grp,"getgrnam",lambda name:grp.getgrgid(os.getgid()))
+    called=[]
+    monkeypatch.setattr(control,"_apply_batch_request",lambda *a:called.append(1))
+    payload={"schema":4,"action":"enable-batch","batch_id":"a"*24,
+             "accounts":[1,2],"entries":[{"id":24,"sha256":"b"*64}]}
+    for malformed in (
+        {**payload,"accounts":[1,1]},
+        {**payload,"entries":[{"id":24,"sha256":"b"*64}]*2},
+        {**payload,"entries":[{"id":True,"sha256":"b"*64}]},
+        {**payload,"entries":[{"id":24,"sha256":"evil"}]},
+        {**payload,"action":"disable-batch"},
+    ):
+        file=path/control.REQUEST
+        file.write_text(json.dumps(malformed))
+        file.chmod(0o600)
+        with pytest.raises(control.ControlError):
+            control.consume_request(path,uid=os.getuid(),status_dir=tmp_path/"status")
+        assert not file.exists()
+    assert not called

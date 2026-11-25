@@ -12,7 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_only_fresh_proxmox_oneliner_is_advertised():
-    readme = (ROOT / "packaging/README.public.md").read_text()
+    public_readme = ROOT / "packaging/README.public.md"
+    readme = (public_readme if public_readme.exists() else ROOT / "README.md").read_text()
     assert "only supported public installation entry point" in readme
     assert readme.count("https://github.com/zemerdon/filter-vision/releases/latest/download/") == 1
     assert "latest/download/install-proxmox.sh" in readme

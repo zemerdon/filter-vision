@@ -60,7 +60,7 @@ def test_new_comparison_rendered_but_no_rule_auto_created(signed_in,app):
     assert "Exact sender-domain combination" in resp.text
     assert "Exact sender-address combination" in resp.text
     assert "3/3 covered" in resp.text
-    assert "1 separate conditions" in resp.text
+    assert "1 new condition" in resp.text
     with app.state.store.db() as db:
         assert db.execute("SELECT COUNT(*) FROM rules").fetchone()[0]==0
 

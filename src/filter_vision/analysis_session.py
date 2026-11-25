@@ -27,15 +27,18 @@ class AnalysisMemory:
             self._expire()
             state = self._sessions.get(key)
             if state is None:
-                return {"catalog": [], "samples": [], "catalog_scanned": False}
+                return {"catalog": [], "samples": [], "catalog_scanned": False,
+                        "batch": None, "rules_batch": None}
             return {"catalog": list(state["catalog"]), "samples": list(state["samples"]),
-                    "catalog_scanned": state["catalog_scanned"]}
+                    "catalog_scanned": state["catalog_scanned"],
+                     "batch": dict(state["batch"]) if state.get("batch") else None,
+                    "rules_batch": dict(state["rules_batch"]) if state.get("rules_batch") else None}
 
     def write(self, key: str, *, catalog=None, samples=None, catalog_scanned=None):
         with self._lock:
             self._expire()
             existing = self._sessions.get(
-                key, {"catalog": [], "samples": [], "catalog_scanned": False})
+                key, {"catalog": [], "samples": [], "catalog_scanned": False, "batch": None, "rules_batch": None})
             if key not in self._sessions and len(self._sessions) >= MAX_SESSIONS:
                 oldest = min(self._sessions, key=lambda name: self._sessions[name]["at"])
                 del self._sessions[oldest]
@@ -45,4 +48,26 @@ class AnalysisMemory:
                 "samples": list(samples) if samples is not None else existing["samples"],
                 "catalog_scanned": (bool(catalog_scanned) if catalog_scanned is not None
                                     else existing["catalog_scanned"]),
+                "batch": existing.get("batch"),
+                "rules_batch": existing.get("rules_batch"),
             }
+
+
+    def set_batch(self, key: str, batch: dict) -> None:
+        """Keep only opaque batch ID/fingerprints in a bounded browser session."""
+        with self._lock:
+            self._expire()
+            if key not in self._sessions:
+                return
+            self._sessions[key]["batch"] = dict(batch)
+            self._sessions[key]["at"] = time.monotonic()
+
+
+    def set_rules_batch(self, key: str, batch: dict) -> None:
+        """Track only IDs/digests and desired state for in-page verification."""
+        with self._lock:
+            self._expire()
+            if key not in self._sessions:
+                self.write(key)
+            self._sessions[key]["rules_batch"] = dict(batch)
+            self._sessions[key]["at"] = time.monotonic()

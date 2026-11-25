@@ -6,6 +6,7 @@ header-only cleaner cannot delete using HTML link destinations. Message bodies a
 """
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import re
 from collections import defaultdict
@@ -377,7 +378,33 @@ def compact_header_plan(samples: list[dict], candidates: list[dict]) -> dict | N
     }
 
 
-def coverage_options(samples: list[dict]) -> list[dict]:
+def candidate_signature(kind: str, field: str, value: str) -> tuple[str, str, str]:
+    """Case-insensitive draft identity, including equivalent legacy raw literals."""
+    if kind in {"legacy_raw_header", "raw_header_contains", "custom_raw_header"}:
+        kind, field = "raw_header_contains", "All raw headers"
+    return (kind, field.strip().casefold(), value.strip().casefold())
+
+
+def candidate_token(candidate: dict) -> str:
+    """Stable opaque form reference, always rechecked against server evidence."""
+    parts = (candidate["kind"], candidate["field"], candidate["value"])
+    return hashlib.sha256(chr(0).join(parts).encode("utf-8")).hexdigest()
+
+
+def _remaining_plan(plan: dict, excluded: set[tuple[str, str, str]]) -> dict | None:
+    original = plan["items"]
+    remaining = [dict(item, token=candidate_token(item)) for item in original
+                 if candidate_signature(item["kind"], item["field"], item["value"])
+                 not in excluded]
+    if not remaining:
+        return None
+    covered = set().union(*(set(item["sample_ids"]) for item in remaining))
+    return dict(plan, items=remaining, count=len(covered),
+                missed=plan["total"] - len(covered),
+                already_saved=len(original) - len(remaining))
+
+
+def coverage_options(samples: list[dict], excluded: set[tuple[str, str, str]] | None = None) -> list[dict]:
     """Show alternative header-only *draft* strategies, not spam verdicts.
 
     The small selected sample is not a legitimate-mail control set. Covering
@@ -421,7 +448,12 @@ def coverage_options(samples: list[dict]) -> list[dict]:
             "total": total, "count": len(matched), "missed": total - len(matched),
             "warning": warning, "sample_ids": sorted(matched),
         })
-    return options
+    if excluded:
+        return [remaining for plan in options
+                if (remaining := _remaining_plan(plan, excluded)) is not None]
+    return [dict(plan, items=[dict(item, token=candidate_token(item))
+                              for item in plan["items"]], already_saved=0)
+            for plan in options]
 
 
 def validate_rule(kind: str, field: str, value: str) -> str:

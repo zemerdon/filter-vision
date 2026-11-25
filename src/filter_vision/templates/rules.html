@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Rules{% endblock %}
-{% block extra_head %}{% if change_waiting %}<meta http-equiv="refresh" content="2">{% endif %}{% endblock %}
+{% block extra_head %}{% if change_waiting %}<meta http-equiv="refresh" content="2">{% endif %}<script src="/static/rule-select.js" defer></script>{% endblock %}
 {% block content %}
 <div class="heading">
   <div>
@@ -17,6 +17,10 @@
 <div class="{{ 'info' if change_waiting else 'error' if 'failed' in change_result or 'not confirmed' in change_result else 'info' }}"
      role="status">{{ change_result }}</div>
 {% endif %}
+{% if bulk_message %}
+<div class="{{ 'error' if 'failed' in bulk_message or 'not confirmed' in bulk_message else 'info' }}"
+     role="status">{{ bulk_message }}</div>
+{% endif %}
 <div class="info">
   The 22 original signatures remain recoverable, but their active settings can
   be changed here just like other rules. The protected service applies changes
@@ -25,14 +29,41 @@
 <div class="panel">
   <h2>Saved filtering rules <span class="pill">{{ rules|length }}</span></h2>
   {% if rules %}
+  <form id="rules-bulk-form" data-rule-list method="post" action="/rules/bulk">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+  </form>
+  <div class="rules-bulk-toolbar">
+    <div class="rules-bulk-buttons">
+      <button class="btn small-btn danger-btn" type="submit" name="operation" value="delete"
+              form="rules-bulk-form">Delete selected</button>
+      <button class="btn small-btn" type="submit" name="operation" value="enable"
+              form="rules-bulk-form" {% if control.request_pending or activation_error %}disabled{% endif %}>Enable selected</button>
+      <button class="btn small-btn" type="submit" name="operation" value="disable"
+              form="rules-bulk-form" {% if control.request_pending or activation_error %}disabled{% endif %}>Disable selected</button>
+      <button class="btn small-btn" type="submit" name="operation" value="duplicate"
+              form="rules-bulk-form">Duplicate selected</button>
+    </div>
+    <span data-rule-count="rules-bulk-form" class="muted small" role="status" aria-live="polite">
+      0 of {{ rules|length }} rules selected
+    </span>
+  </div>
+  <p class="muted small">Original and active rules cannot be deleted. Bulk actions support up to 64 selected rules. Bulk Delete is all-or-nothing;
+  duplicates are inactive copies. Enable and Disable use protected root-controlled approval.</p>
   <div class="table-wrap rules-table-wrap">
     <table class="rules-table">
       <thead>
-        <tr><th>ID</th><th>Name</th><th>Type</th><th>Header</th><th>Value</th><th>Action</th><th>Status</th><th>Manage</th></tr>
+        <tr><th><label class="junk-checkbox">
+          <input type="checkbox" form="rules-bulk-form" name="select_all" value="yes"
+                 aria-label="Select all saved rules">
+          <span>Select all</span></label></th><th>ID</th><th>Name</th><th>Type</th><th>Header</th><th>Value</th><th>Action</th><th>Status</th><th>Manage</th></tr>
       </thead>
       <tbody>
       {% for r in rules %}
         <tr class="rule-row">
+          <td data-label="Select" class="rule-select-cell"><label class="junk-checkbox">
+            <input type="checkbox" form="rules-bulk-form" name="selected" value="{{ r.id }}"
+                   aria-label="Select rule #{{ r.id }}">
+          </label></td>
           <td data-label="ID">#{{ r.id }}</td>
           <td data-label="Name">{{ r.label }}</td>
           <td data-label="Type">{{ r.kind.replace('_',' ')|title }}</td>
@@ -49,30 +80,34 @@
           <td data-label="Manage">
             <div class="rule-tools">
               {% if r.id in approved_ids or r.id in custom_active %}
-                <form method="post" action="/rules/{{ r.id }}/toggle">
+                <form class="rule-toggle" method="post" action="/rules/{{ r.id }}/toggle">
                   <input type="hidden" name="csrf" value="{{ csrf }}">
                   <input type="hidden" name="action" value="disable">
                   <button class="btn small-btn" type="submit"
                     {% if control.request_pending or activation_error %}disabled{% endif %}>Disable</button>
                 </form>
               {% elif r.id in legacy_ids or r.id in editable_ids %}
-                <form method="post" action="/rules/{{ r.id }}/toggle">
+                <form class="rule-toggle" method="post" action="/rules/{{ r.id }}/toggle">
                   <input type="hidden" name="csrf" value="{{ csrf }}">
                   <input type="hidden" name="action" value="enable">
                   <button class="btn small-btn" type="submit"
                     {% if control.request_pending or activation_error %}disabled{% endif %}>Enable</button>
                 </form>
+              {% else %}
+                <span class="rule-toggle rule-tool-placeholder"></span>
               {% endif %}
-              <a class="btn small-btn" href="/rules/{{ r.id }}/edit">Edit</a>
-              <form method="post" action="/rules/{{ r.id }}/duplicate">
+              <a class="btn small-btn rule-edit" href="/rules/{{ r.id }}/edit">Edit</a>
+              <form class="rule-duplicate" method="post" action="/rules/{{ r.id }}/duplicate">
                 <input type="hidden" name="csrf" value="{{ csrf }}">
                 <button class="btn small-btn" type="submit">Duplicate</button>
               </form>
               {% if r.id in editable_ids and r.id not in custom_active and r.id not in managed_custom %}
-                <form method="post" action="/rules/{{ r.id }}/delete">
+                <form class="rule-delete" method="post" action="/rules/{{ r.id }}/delete">
                   <input type="hidden" name="csrf" value="{{ csrf }}">
                   <button class="btn small-btn danger-btn" type="submit">Delete</button>
                 </form>
+              {% else %}
+                <span class="rule-delete rule-tool-placeholder"></span>
               {% endif %}
             </div>
           </td>

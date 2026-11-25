@@ -28,7 +28,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import __version__
-from .analysis import MAX_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES, inspect_eml, suggestions, coverage_options, validate_rule
+from .analysis import (MAX_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES,
+                       inspect_eml, suggestions, coverage_options, validate_rule,
+                       candidate_signature, candidate_token)
 from .rule_management import (
     RULE_DEFINITIONS, DRAFT_KINDS, RuleManagementError, draft_guard,
     update_draft, duplicate_draft, delete_draft,
@@ -47,15 +49,20 @@ from .oauth import (TokenVault, OAuthError, start_device_auth, poll_device_auth,
 from .preview import scan_junk_preview, PreviewError
 from .junk_browse import list_junk, fetch_selected, BrowseError, MAX_SELECTED
 from .analysis_session import AnalysisMemory
+from .draft_saving import (saved_signatures, save_disabled_drafts,
+                           save_enable_candidates, MAX_BATCH_DRAFTS)
 from .manual_eval import evaluate, FIELD_OPTIONS, OPERATORS
 from .live import load_policy, LiveSafetyError
 from .control import (control_view, request_control, ControlError,
                       INTERVALS, ACTIONS, service_status)
 from .rule_activation import (read_approvals, source_digest, ActivationError,
                               _draft_rule)
-from .activation_preview import preview_rule, ApprovalPreviewError
-from .control import request_rule_control, request_managed_control
+from .activation_preview import preview_rule, preview_rules, ApprovalPreviewError
+from .control import (request_rule_control, request_managed_control,
+                      request_batch_enable, request_rules_bulk)
 from .managed_rules import (read_managed, effective, normalize, ManagedError)
+from .bulk_rule_management import (validate_ids, duplicate_rules, delete_rules,
+                                    MAX_RULES_BULK)
 
 
 
@@ -507,9 +514,55 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
                      manual_report=None, manual_input=None, status=200):
         state = app.state.analysis_memory.read(sess["csrf"])
         samples = state["samples"]
+        with store.db() as con:
+            existing = saved_signatures(con)
+        available = [candidate for candidate in suggestions(samples)
+                     if not candidate.get("can_save")
+                     or candidate_signature(candidate["kind"], candidate["field"],
+                                            candidate["value"]) not in existing]
+        saved = request.query_params.get("saved", "")
+        saved_count = int(saved) if saved.isdecimal() and int(saved) <= MAX_BATCH_DRAFTS else None
+        batch = state.get("batch")
+        batch_status = ""
+        batch_waiting = False
+        if batch:
+            current = control_view(store.directory)
+            last = current["last_action"]
+            if last.get("batch_id") == batch["batch_id"] and last.get("state") == "success":
+                try:
+                    approvals = {entry["id"]: entry for entry in read_approvals()}
+                    confirmed = all(
+                        item["id"] in approvals
+                        and approvals[item["id"]]["sha256"] == item["sha256"]
+                        and set(batch["accounts"]).issubset(
+                            approvals[item["id"]]["accounts"])
+                        for item in batch["entries"])
+                except (ActivationError, OSError):
+                    confirmed = False
+                batch_status = (f"{len(batch['entries'])} rules enabled on "
+                                f"{len(batch['accounts'])} account(s)." if confirmed
+                                else "Batch finished, but protected approval could not be verified.")
+            elif last.get("batch_id") == batch["batch_id"] and last.get("state") == "failed":
+                batch_status = "Batch enable failed. Drafts remain disabled; review Rules."
+            elif (current["request_pending"]
+                  or (last.get("batch_id") == batch["batch_id"]
+                      and last.get("state") == "processing")):
+                batch_waiting = True
+                batch_status = ("Enabling selected rules is pending root verification. "
+                                "No activation is confirmed yet.")
+            else:
+                batch_status = ("Batch activation not confirmed. "
+                                "Saved drafts remain on the Rules page.")
+        available = [dict(candidate, token=candidate_token(candidate))
+                     for candidate in available]
         return render(request, "analyze.html", active="analyze", sess=sess,
-                      samples=samples, suggestions=suggestions(samples) if samples else [],
-                      coverage_options=coverage_options(samples),
+                      samples=samples, suggestions=available,
+                      coverage_options=sorted(
+                          coverage_options(samples, existing),
+                          key=lambda p: {"sender_domain": 0, "compact": 1,
+                                         "sender_exact": 2}.get(p["kind"], 3)),
+                      saved_count=saved_count, batch_status=batch_status,
+                      batch_waiting=batch_waiting,
                       catalog=state["catalog"], catalog_scanned=state["catalog_scanned"],
                       connected_accounts=connected_junk_accounts(),
                       manual_fields=FIELD_OPTIONS, manual_operators=OPERATORS,
@@ -657,6 +710,113 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
                     f"sample_count={result['total']} matched={result['count']}")
         return analyze_page(request, sess, manual_report=result, manual_input=inputs)
 
+    @app.post("/analyze/candidate", response_class=HTMLResponse)
+    def save_analyzed_candidate(request: Request, csrf: str = Form(""),
+                                token: str = Form("")):
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        if not valid_csrf(sess, csrf):
+            return invalid_csrf()
+        samples = app.state.analysis_memory.read(sess["csrf"])["samples"]
+        if not samples:
+            return HTMLResponse("Analysis expired; analyze messages again", status_code=410)
+        with store.db() as con:
+            existing = saved_signatures(con)
+        available = [candidate for candidate in suggestions(samples)
+                     if candidate.get("can_save")
+                     and candidate_signature(candidate["kind"], candidate["field"],
+                                             candidate["value"]) not in existing]
+        candidate = next((c for c in available if candidate_token(c) == token), None)
+        if candidate is None:
+            return HTMLResponse("Rule was not offered or has already been saved", status_code=409)
+        added = save_disabled_drafts(store, [(
+            candidate["kind"], candidate["field"], candidate["value"])])
+        return RedirectResponse(f"/analyze?saved={added}", status_code=303)
+
+    @app.post("/analyze/drafts", response_class=HTMLResponse)
+    def save_analysis_drafts(request: Request, csrf: str = Form(""),
+                             plan: str = Form(""),
+                             selected: list[str] = Form([]),
+                             select_all: str = Form(""),
+                             single: str = Form(""),
+                             intent: str = Form("save")):
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        if not valid_csrf(sess, csrf):
+            return invalid_csrf()
+        if select_all not in ("", "yes") or intent not in ("save", "enable"):
+            return HTMLResponse("Invalid selection option", status_code=400)
+        if single and intent != "save":
+            return HTMLResponse("Invalid individual rule action", status_code=400)
+        samples = app.state.analysis_memory.read(sess["csrf"])["samples"]
+        if not samples:
+            return HTMLResponse("Analysis expired; analyze messages again", status_code=410)
+        with store.db() as con:
+            existing = saved_signatures(con)
+        current = next((candidate for candidate in coverage_options(samples, existing)
+                        if candidate["kind"] == plan), None)
+        if current is None:
+            return HTMLResponse("No new candidates in this plan", status_code=409)
+        offered = {item["token"]: item for item in current["items"]}
+        if single:
+            tokens = [single]
+        elif select_all == "yes":
+            tokens = list(offered)
+        else:
+            tokens = selected
+        if (not 1 <= len(tokens) <= MAX_BATCH_DRAFTS or
+                len(set(tokens)) != len(tokens) or
+                any(token not in offered for token in tokens)):
+            return HTMLResponse("Invalid or stale rule selection", status_code=400)
+        rows = [(offered[token]["kind"], offered[token]["field"],
+                 offered[token]["value"]) for token in tokens]
+        if intent == "enable":
+            if len(rows) > 32:
+                return HTMLResponse("Select no more than 32 rules for activation", status_code=400)
+            try:
+                control = control_view(store.directory)
+                if not control["control_installed"] or control["request_pending"]:
+                    return HTMLResponse("Protected rule control unavailable or busy",
+                                        status_code=409)
+                policy = load_policy()
+                accounts = sorted(policy["accounts"])
+                if not accounts or not all(app.state.token_vault.connected(i)
+                                           for i in accounts):
+                    return HTMLResponse("Approved Microsoft accounts must be connected",
+                                        status_code=409)
+                if len(read_approvals()) + len(rows) > 64:
+                    return HTMLResponse("Custom rule approval limit reached", status_code=409)
+                # One read-only Junk pass for all rules, both approved accounts.
+                # A failed result for even one account blocks the whole batch.
+                preview_rules(store, [
+                    {"kind": kind, "field": field, "pattern": value,
+                     "label": "Candidate preview"} for kind, field, value in rows
+                ], accounts, app.state.token_vault)
+                entries = save_enable_candidates(store, rows)
+                batch_id = secrets.token_hex(12)
+                queued = request_batch_enable(store.directory, entries, accounts, batch_id)
+                if not queued:
+                    return HTMLResponse(
+                        "Rules saved as disabled drafts, but another control action "
+                        "started. No activation was queued.", status_code=409)
+                app.state.analysis_memory.set_batch(sess["csrf"], {
+                    "batch_id": batch_id, "entries": entries, "accounts": accounts})
+                store.audit("rule_batch_enable_queued", f"count={len(entries)}")
+            except (LiveSafetyError, ActivationError, ApprovalPreviewError,
+                    ControlError, OSError, ValueError, TypeError):
+                return HTMLResponse(
+                    "Batch activation not approved. No rule was enabled; "
+                    "check saved drafts before retrying.", status_code=409)
+            return RedirectResponse("/analyze", status_code=303)
+        try:
+            added = save_disabled_drafts(store, rows)
+        except ValueError:
+            return HTMLResponse("Selected rule definition is no longer valid",
+                                status_code=400)
+        return RedirectResponse(f"/analyze?saved={added}", status_code=303)
+
     @app.post("/rules", response_class=HTMLResponse)
     def rule_add(request: Request, csrf: str = Form(""), kind: str = Form(""),
                  field: str = Form(""), value: str = Form("")):
@@ -669,11 +829,7 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
             value = validate_rule(kind, field, value)
         except ValueError as exc:
             return HTMLResponse(str(exc), status_code=400)
-        label = f"{field}: {value}"[:200]
-        with store.db() as con:
-            con.execute("INSERT INTO rules(label,kind,field,pattern,created_at) VALUES(?,?,?,?,?)",
-                        (label, kind, field, value, int(time.time())))
-        store.audit("rule_draft_created", "An inactive filtering rule was created")
+        save_disabled_drafts(store, [(kind, field, value)])
         return RedirectResponse("/rules", status_code=303)
 
     @app.get("/rules", response_class=HTMLResponse)
@@ -766,14 +922,149 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
                 waiting = bool(relevant and last.get("state") == "success")
                 result = ("Applying rule change…" if waiting else
                           "Rule change not confirmed; check service status")
+        bulk_message = ""
+        bulk_waiting = False
+        done = request.query_params.get("bulk_done","")
+        count = request.query_params.get("count","")
+        if done in ("deleted","duplicated") and count.isdecimal() and 0 < int(count) <= MAX_RULES_BULK:
+            bulk_message = f"{int(count)} selected rule(s) {done}."
+        elif done == "unchanged":
+            bulk_message = "Selected rules already have the requested activation state."
+        bulk_id = request.query_params.get("bulk", "")
+        state = app.state.analysis_memory.read(sess["csrf"])
+        batch = state.get("rules_batch")
+        if batch and batch["batch_id"] == bulk_id:
+            last = control["last_action"]
+            matches = (last.get("batch_id") == batch["batch_id"]
+                       and last.get("action") == "rules-" + batch["action"])
+            if matches and last.get("state") == "success":
+                observed = all((rid in active_legacy if rid in legacy_ids
+                                else rid in custom_active) == batch["activate"]
+                               for rid in batch["ids"])
+                bulk_message = (f"Bulk {batch['action']} verified for "
+                                f"{len(batch['ids'])} selected rule(s)." if observed
+                                else "Bulk change finished but the protected rule state could not be confirmed.")
+            elif matches and last.get("state") == "failed":
+                bulk_message = "Bulk rule operation failed. Check protected control status."
+            elif control["request_pending"] or (matches and last.get("state") == "processing"):
+                bulk_waiting = True
+                bulk_message = "Bulk rule change pending root verification; no activation confirmed."
+            else:
+                bulk_message = "Bulk action not confirmed. Review protected rule status."
         return render(request, "rules.html", active="rules", sess=sess,
                       rules=rules, approved_ids=approved_ids,
                       legacy_ids=legacy_ids, editable_ids=editable_ids,
                       custom_active=custom_active, managed_custom=managed_custom,
                       activation_error=activation_error,
                       accounts=accounts, review_requests=reviews,
-                      control=control, change_result=result, change_waiting=waiting)
+                      control=control, change_result=result,
+                      change_waiting=waiting or bulk_waiting,
+                      bulk_message=bulk_message)
 
+
+    @app.post("/rules/bulk", response_class=HTMLResponse)
+    def rules_bulk_action(request: Request, csrf: str = Form(""),
+                          selected: list[str] = Form([]),
+                          select_all: str = Form(""),
+                          operation: str = Form("")):
+        sess, denial = guard(request)
+        if denial:
+            return denial
+        if not valid_csrf(sess, csrf):
+            return invalid_csrf()
+        if operation not in ("delete","duplicate","enable","disable") or (
+                select_all not in ("","yes")):
+            return HTMLResponse("Invalid bulk rule operation", status_code=400)
+        try:
+            if select_all == "yes":
+                with store.db() as con:
+                    ids = [int(row[0]) for row in con.execute(
+                        "SELECT id FROM rules ORDER BY id DESC")]
+            else:
+                if not selected or len(selected) > MAX_RULES_BULK or any(
+                        not v.isdecimal() or not 1 <= int(v) < 2**63
+                        for v in selected):
+                    return HTMLResponse("Invalid selected rule IDs", status_code=400)
+                ids = [int(i) for i in selected]
+            validate_ids(ids)
+            if operation == "delete":
+                count = delete_rules(store, ids)
+                return RedirectResponse(f"/rules?bulk_done=deleted&count={count}", status_code=303)
+            if operation == "duplicate":
+                count = duplicate_rules(store, ids)
+                return RedirectResponse(f"/rules?bulk_done=duplicated&count={count}", status_code=303)
+
+            control = control_view(store.directory)
+            if not control["control_installed"] or control["request_pending"]:
+                return HTMLResponse("Protected rule control unavailable or busy",
+                                    status_code=409)
+            policy = load_policy()
+            accounts = sorted(policy["accounts"])
+            approvals = {x["id"]:x for x in read_approvals()}
+            managed = read_managed()
+            off_legacy = {x["id"] for x in managed["legacy"] if not x["enabled"]}
+            managed_map = {
+                group:{x["id"]:x for x in managed[group]}
+                for group in ("legacy","custom")}
+            enabled = operation == "enable"
+            actionable = []
+            preview = []
+            with store.db() as con:
+                for rid in ids:
+                    row = con.execute("SELECT * FROM rules WHERE id=?",(rid,)).fetchone()
+                    if row is None:
+                        return HTMLResponse("Selected rule was removed", status_code=409)
+                    source = dict(row)
+                    legacy = source["kind"] == "legacy_raw_header"
+                    active = rid not in off_legacy if legacy else rid in approvals
+                    if active == enabled:
+                        continue
+                    if not legacy:
+                        _draft_rule(con, rid)
+                    else:
+                        scope = {int(r[0]) for r in con.execute(
+                            "SELECT account_id FROM rule_scopes WHERE rule_id=?",(rid,))}
+                        if scope != set(accounts):
+                            return HTMLResponse("Protected rule scope mismatch",status_code=409)
+                    overlay = managed_map["legacy" if legacy else "custom"].get(rid)
+                    if overlay is not None and overlay["sha256"] != source_digest(source):
+                        return HTMLResponse("Managed rule source changed",status_code=409)
+                    if not legacy and rid in approvals and (
+                            approvals[rid]["sha256"] != source_digest(source)
+                            or approvals[rid]["accounts"] != accounts):
+                        return HTMLResponse("Existing rule approval mismatch",status_code=409)
+                    actionable.append({"id":rid,"sha256":source_digest(source)})
+                    if enabled:
+                        preview.append(effective(source,overlay))
+            if not actionable:
+                return RedirectResponse("/rules?bulk_done=unchanged",status_code=303)
+            if enabled:
+                if not all(app.state.token_vault.connected(i) for i in accounts):
+                    return HTMLResponse("Approved Microsoft accounts must be connected",
+                                        status_code=409)
+                if len(approvals) + sum(x["id"] not in managed_map["legacy"]
+                                        for x in actionable) > 64:
+                    return HTMLResponse("Approval limit exceeded",status_code=409)
+                preview_rules(store, preview, accounts, app.state.token_vault)
+            batch_id = secrets.token_hex(12)
+            if not request_rules_bulk(
+                    store.directory, actionable, accounts,
+                    "rules-" + operation, batch_id):
+                return HTMLResponse("Another protected rule action is pending",
+                                    status_code=409)
+            app.state.analysis_memory.set_rules_batch(sess["csrf"], {
+                "batch_id": batch_id, "ids": [item["id"] for item in actionable],
+                "activate": enabled, "action": operation})
+            store.audit("rules_bulk_control_queued",
+                        f"count={len(actionable)} action={operation}")
+            return RedirectResponse(f"/rules?bulk={batch_id}",status_code=303)
+        except (RuleManagementError, ActivationError, ManagedError, LiveSafetyError,
+                ApprovalPreviewError, ControlError, OSError, ValueError, TypeError) as exc:
+            if isinstance(exc, RuleManagementError):
+                return HTMLResponse(str(exc),status_code=exc.status_code)
+            return HTMLResponse(
+                "Bulk rule request rejected; no protected state was changed",
+                status_code=409)
 
     @app.post("/rules/{rule_id}/toggle", response_class=HTMLResponse)
     def toggle_custom_rule(request: Request, rule_id: int,

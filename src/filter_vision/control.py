@@ -31,6 +31,8 @@ INTERVALS = (5, 10, 15, 20, 30, 60, 120, 240, 360, 720, 1440)
 ACTIONS = ("start", "stop", "restart", "run-now", "set-interval")
 RULE_ACTIONS = ("enable-rule", "disable-rule")
 MANAGED_ACTIONS = ("legacy-enable", "legacy-disable", "legacy-edit", "custom-edit")
+BATCH_ACTION = "enable-batch"
+MAX_BATCH_CONTROL_BYTES = 8192
 
 
 STATUS_FIELDS = {
@@ -113,7 +115,10 @@ def _bounded_status(path: Path = STATUS_PATH) -> dict:
                 "success", "failed", "processing"):
             return {}
         rule_id = result.get("rule_id")
+        batch_id = result.get("batch_id")
+        batch_id = batch_id if type(batch_id) is str and re.fullmatch(r"[a-f0-9]{24}", batch_id) else None
         return {
+            "batch_id": batch_id,
             "state": result["state"],
             "action": str(result.get("action", ""))[:32],
             "detail": str(result.get("detail", ""))[:180],
@@ -240,6 +245,127 @@ def request_managed_control(data_dir: Path, action: str, rule_id: int,
         return True
     finally:
         os.unlink(temporary)
+
+
+def request_batch_enable(data_dir: Path, entries: list[dict],
+                         accounts: list[int], batch_id: str) -> bool:
+    """Queue a bounded list of source fingerprints for one root policy write."""
+    from .rule_activation import HEX
+    if (type(batch_id) is not str or not re.fullmatch(r"[a-f0-9]{24}", batch_id)
+            or type(entries) is not list or not 1 <= len(entries) <= 32
+            or type(accounts) is not list or not accounts or len(accounts) > 2
+            or len(set(accounts)) != len(accounts)
+            or any(type(i) is not int or i not in (1, 2) for i in accounts)):
+        raise ControlError("Invalid batch activation request")
+    ids = set()
+    for entry in entries:
+        if (type(entry) is not dict or set(entry) != {"id", "sha256"}
+                or type(entry["id"]) is not int or not 1 <= entry["id"] < 2**63
+                or entry["id"] in ids
+                or type(entry["sha256"]) is not str or not HEX.fullmatch(entry["sha256"])):
+            raise ControlError("Invalid batch activation source")
+        ids.add(entry["id"])
+    payload = json.dumps({
+        "schema": 4, "action": BATCH_ACTION, "batch_id": batch_id,
+        "accounts": sorted(accounts), "entries": entries,
+    }, separators=(",", ":")).encode()
+    if len(payload) > MAX_BATCH_CONTROL_BYTES:
+        raise ControlError("Batch request too large")
+    fd, temporary = tempfile.mkstemp(prefix=".batch-request.", dir=data_dir)
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write(payload)
+            out.flush()
+            os.fsync(out.fileno())
+        os.chmod(temporary, 0o600)
+        try:
+            os.link(temporary, data_dir / REQUEST, follow_symlinks=False)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        os.unlink(temporary)
+
+
+def _apply_batch_request(data_dir: Path, data: dict) -> str:
+    from .rule_activation import apply_batch_approvals, ActivationError
+    from .storage import Store
+    db_path = data_dir / "filter-vision.sqlite3"
+    if db_path.is_symlink() or not db_path.is_file():
+        raise ControlError("Rule database unavailable")
+    state = service_status()
+    if state["service"]["ActiveState"] == "unknown" or state["scan_running"]:
+        raise ControlError("Cleaner state unavailable or busy; batch not activated")
+    try:
+        store = Store(data_dir)
+        store.audit("root_rule_batch_attempted", f"count={len(data['entries'])}")
+        result = apply_batch_approvals(store, data["entries"], data["accounts"])
+        store.audit("root_rule_batch_enabled", f"count={len(data['entries'])}")
+        return result
+    except (ActivationError, OSError, ValueError, TypeError):
+        raise ControlError("Protected batch approval rejected; no batch activated") from None
+
+
+def request_rules_bulk(data_dir: Path, entries: list[dict],
+                       accounts: list[int], action: str, batch_id: str) -> bool:
+    """Queue one protected enable/disable transition across selected rule IDs."""
+    from .bulk_rule_management import MAX_RULES_BULK
+    from .rule_activation import HEX
+    if (action not in ("rules-enable", "rules-disable")
+            or type(batch_id) is not str or not re.fullmatch(r"[a-f0-9]{24}", batch_id)
+            or type(entries) is not list or not 1 <= len(entries) <= MAX_RULES_BULK
+            or type(accounts) is not list or not accounts or len(accounts)>2
+            or len(set(accounts)) != len(accounts)
+            or any(type(i) is not int or i not in (1,2) for i in accounts)):
+        raise ControlError("Invalid selected rules")
+    seen = set()
+    for item in entries:
+        if (type(item) is not dict or set(item) != {"id","sha256"}
+                or type(item["id"]) is not int or not 1 <= item["id"] < 2**63
+                or item["id"] in seen or type(item["sha256"]) is not str
+                or not HEX.fullmatch(item["sha256"])):
+            raise ControlError("Invalid selected rule source")
+        seen.add(item["id"])
+    payload = json.dumps({
+        "schema":5, "action":action, "batch_id":batch_id,
+        "accounts":sorted(accounts), "entries":entries,
+    },separators=(",",":")).encode()
+    if len(payload)>MAX_BATCH_CONTROL_BYTES:
+        raise ControlError("Rule selection exceeds control size limit")
+    fd,temp = tempfile.mkstemp(prefix=".rules-bulk.",dir=data_dir)
+    try:
+        with os.fdopen(fd,"wb") as out:
+            out.write(payload)
+            out.flush()
+            os.fsync(out.fileno())
+        os.chmod(temp,0o600)
+        try:
+            os.link(temp,data_dir/REQUEST,follow_symlinks=False)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        os.unlink(temp)
+
+
+def _apply_rules_bulk_request(data_dir: Path, data: dict) -> str:
+    from .bulk_rule_management import apply_root_bulk_rule_state, RuleManagementError
+    from .storage import Store
+    db_path = data_dir / "filter-vision.sqlite3"
+    if db_path.is_symlink() or not db_path.is_file():
+        raise ControlError("Rule database unavailable")
+    scanner = service_status()
+    if scanner["service"]["ActiveState"] == "unknown" or scanner["scan_running"]:
+        raise ControlError("Cleaner unavailable or busy; no rule action applied")
+    try:
+        store=Store(data_dir)
+        store.audit("root_rules_bulk_attempted", f"count={len(data['entries'])} action={data['action']}")
+        result=apply_root_bulk_rule_state(
+            store,data["entries"],data["accounts"],data["action"]=="rules-enable")
+        store.audit("root_rules_bulk_changed", f"count={len(data['entries'])} action={data['action']}")
+        return result
+    except (RuleManagementError,LiveSafetyError,OSError,ValueError,TypeError):
+        raise ControlError("Protected bulk rule transition rejected") from None
 
 
 def _apply_managed_request(data_dir: Path, data: dict) -> str:
@@ -384,7 +510,8 @@ def _execute(action: str, interval: int | None = None,
 
 
 def _write_status(state: str, action: str, detail: str,
-                  directory: Path = STATUS_PATH.parent, *, rule_id: int | None = None):
+                  directory: Path = STATUS_PATH.parent, *, rule_id: int | None = None,
+                  batch_id: str | None = None):
     directory.mkdir(mode=0o750, parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".status.", dir=directory)
     try:
@@ -397,6 +524,8 @@ def _write_status(state: str, action: str, detail: str,
             }
             if rule_id is not None:
                 payload["rule_id"] = rule_id
+            if batch_id is not None:
+                payload["batch_id"] = batch_id
             json.dump(payload, output)
             output.write("\n")
             output.flush()
@@ -417,14 +546,17 @@ def consume_request(data_dir: Path, *, uid: int, status_dir: Path = STATUS_PATH.
         fd = os.open(request, os.O_RDONLY | os.O_NOFOLLOW)
         meta = os.fstat(fd)
         if (not stat.S_ISREG(meta.st_mode) or meta.st_uid != uid
-                or stat.S_IMODE(meta.st_mode) != 0o600 or meta.st_size > 1536):
+                or stat.S_IMODE(meta.st_mode) != 0o600
+                or meta.st_size > MAX_BATCH_CONTROL_BYTES):
             raise ControlError("Unsafe control request")
-        payload = os.read(fd, 1537)
-        if len(payload) > 1536:
+        payload = os.read(fd, MAX_BATCH_CONTROL_BYTES + 1)
+        if len(payload) > MAX_BATCH_CONTROL_BYTES:
             raise ControlError("Oversized control request")
         data = json.loads(payload)
         if not isinstance(data, dict) or type(data.get("schema")) is not int:
             raise ControlError("Invalid control request")
+        if data["schema"] != 4 and len(payload) > 1536:
+            raise ControlError("Oversized legacy control request")
         if data["schema"] == 1:
             if (set(data) != {"schema", "action", "minutes"}
                     or type(data["action"]) is not str):
@@ -475,6 +607,51 @@ def consume_request(data_dir: Path, *, uid: int, status_dir: Path = STATUS_PATH.
                 except ManagedError:
                     raise ControlError("Invalid managed rule matcher") from None
             action, interval = data["action"], None
+        elif data["schema"] == 4:
+            from .rule_activation import HEX
+            items = data.get("entries")
+            accounts = data.get("accounts")
+            if (set(data) != {"schema", "action", "batch_id", "accounts", "entries"}
+                    or data["action"] != BATCH_ACTION
+                    or type(data["batch_id"]) is not str
+                    or not re.fullmatch(r"[a-f0-9]{24}", data["batch_id"])
+                    or type(items) is not list or not 1 <= len(items) <= 32
+                    or type(accounts) is not list or not accounts
+                    or len(accounts) > 2 or len(set(accounts)) != len(accounts)
+                    or any(type(i) is not int or i not in (1, 2) for i in accounts)):
+                raise ControlError("Invalid batch control request")
+            ids = set()
+            for item in items:
+                if (type(item) is not dict or set(item) != {"id", "sha256"}
+                        or type(item["id"]) is not int
+                        or not 1 <= item["id"] < 2**63 or item["id"] in ids
+                        or type(item["sha256"]) is not str
+                        or not HEX.fullmatch(item["sha256"])):
+                    raise ControlError("Invalid batch source")
+                ids.add(item["id"])
+            action, interval = BATCH_ACTION, None
+        elif data["schema"] == 5:
+            from .rule_activation import HEX
+            items=data.get("entries")
+            accounts=data.get("accounts")
+            if (set(data)!={"schema","action","batch_id","accounts","entries"}
+                    or data["action"] not in ("rules-enable","rules-disable")
+                    or type(data["batch_id"]) is not str
+                    or not re.fullmatch(r"[a-f0-9]{24}",data["batch_id"])
+                    or type(items) is not list or not 1 <= len(items) <= 64
+                    or type(accounts) is not list or not accounts or len(accounts)>2
+                    or len(set(accounts))!=len(accounts)
+                    or any(type(i) is not int or i not in (1,2) for i in accounts)):
+                raise ControlError("Invalid Rules bulk request")
+            ids=set()
+            for item in items:
+                if (type(item) is not dict or set(item)!={"id","sha256"}
+                        or type(item["id"]) is not int or not 1 <= item["id"] < 2**63
+                        or item["id"] in ids or type(item["sha256"]) is not str
+                        or not HEX.fullmatch(item["sha256"])):
+                    raise ControlError("Invalid Rules bulk source")
+                ids.add(item["id"])
+            action,interval=data["action"],None
         else:
             raise ControlError("Unsupported control request schema")
     except (OSError, ValueError, UnicodeError, TypeError) as exc:
@@ -486,6 +663,9 @@ def consume_request(data_dir: Path, *, uid: int, status_dir: Path = STATUS_PATH.
     def update(state: str, detail: str):
         if data["schema"] in (2, 3):
             _write_status(state, action, detail, status_dir, rule_id=data["rule_id"])
+        elif data["schema"] in (4,5):
+            _write_status(state, action, detail, status_dir,
+                          batch_id=data["batch_id"])
         else:
             _write_status(state, action, detail, status_dir)
     update("processing", "Operation in progress")
@@ -494,6 +674,8 @@ def consume_request(data_dir: Path, *, uid: int, status_dir: Path = STATUS_PATH.
             data_dir, action, data["rule_id"], data["accounts"],
             data["source_sha256"]) if data["schema"] == 2 else
             _apply_managed_request(data_dir, data) if data["schema"] == 3 else
+            _apply_batch_request(data_dir, data) if data["schema"] == 4 else
+            _apply_rules_bulk_request(data_dir, data) if data["schema"] == 5 else
             _execute(action, interval))
         update("success", detail)
     except ControlError as error:

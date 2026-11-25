@@ -174,7 +174,7 @@ def test_raw_draft_save_is_inert_and_enable_request_rejected(signed_in, app):
 
 
 def test_updates_page_only_three_controls_and_closed_changelog(client, app):
-    app.state.latest = {"tag": "v0.2.9", "url": "https://github.com/zemerdon/filter-vision/releases/tag/v0.2.9",
+    app.state.latest = {"tag": "v0.2.12", "url": "https://github.com/zemerdon/filter-vision/releases/tag/v0.2.12",
                         "is_newer": True, "error": "", "notes": ["Synthetic release note"]}
     page = client.get("/updates").text
     assert page.count("Check for updates</button>") == 1

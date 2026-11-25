@@ -237,3 +237,57 @@ def apply_approval(store, action: str, rule_id: int,
     return ("Rule #%d %s on %d account(s)" %
             (rule_id, "enabled" if action == "enable-rule" else "disabled",
              len(account_ids)))
+
+
+def apply_batch_approvals(store, entries: list[dict], account_ids: list[int],
+                          *, path: Path | None = None,
+                          policy_loader=load_policy) -> str:
+    """Root-only all-or-nothing activation of already saved disabled drafts.
+
+    Preview is required in the unprivileged WebUI before queuing; this root
+    handler independently verifies every current source and frozen policy.
+    Only one final atomic extra-policy replace can activate the whole batch.
+    """
+    path = Path(EXTRA_POLICY if path is None else path)
+    if os.geteuid() != 0:
+        raise ActivationError("Root approval helper required")
+    if (type(entries) is not list or not 1 <= len(entries) <= 32
+            or type(account_ids) is not list or not account_ids
+            or len(account_ids) > 2 or len(set(account_ids)) != len(account_ids)
+            or any(type(i) is not int or i not in (1, 2) for i in account_ids)):
+        raise ActivationError("Invalid batch approval scope")
+    seen = set()
+    for entry in entries:
+        if (type(entry) is not dict or set(entry) != {"id", "sha256"}
+                or type(entry["id"]) is not int or not 1 <= entry["id"] < 2**63
+                or type(entry["sha256"]) is not str or not HEX.fullmatch(entry["sha256"])
+                or entry["id"] in seen):
+            raise ActivationError("Invalid batch approval source")
+        seen.add(entry["id"])
+    try:
+        legacy = policy_loader()
+    except (LiveSafetyError, ValueError, OSError, KeyError, TypeError):
+        raise ActivationError("Existing protected cleaner approval is invalid") from None
+    if not set(account_ids).issubset(legacy["accounts"]):
+        raise ActivationError("Batch account scope not root-approved")
+    from .live import _active_rules
+    for account in legacy["accounts"]:
+        _active_rules(store, account, legacy, include_extra=False)
+    existing = read_approvals(path)
+    existing_ids = {entry["id"] for entry in existing}
+    if existing_ids.intersection(seen):
+        raise ActivationError("Selected rule already has a protected approval")
+    if len(existing) + len(entries) > MAX_APPROVALS:
+        raise ActivationError("Too many approved custom rules")
+    with store.db() as con:
+        for entry in entries:
+            rule = _draft_rule(con, entry["id"])
+            if source_digest(rule) != entry["sha256"]:
+                raise ActivationError("Batch rule changed after its preview")
+    updated = existing + [
+        {"id": entry["id"], "sha256": entry["sha256"],
+         "accounts": sorted(account_ids)} for entry in entries
+    ]
+    # The ONLY activating write. A rejected member produces no approvals.
+    _write_root_policy(path, updated)
+    return "%d rules enabled on %d account(s)" % (len(entries), len(account_ids))
